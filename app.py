@@ -343,7 +343,7 @@ def search_google_cse(query: str, api_key: str, cse_id: str, n: int) -> list:
 
 def search_apollo(jd_reqs: dict, api_key: str, n: int) -> list:
     resp = requests.post(
-        "https://api.apollo.io/api/v1/mixed_people_search",
+        "https://api.apollo.io/api/v1/people/search",
         headers={
             "Content-Type": "application/json",
             "Cache-Control": "no-cache",
@@ -957,9 +957,9 @@ with tab_search:
                 c.update({
                     "must_have_detail": s["must_have_detail"],
                     "must_have":        s["must_have"],
+                    "role_match":       s["role_match"],
                     "seniority":        s["seniority"],
                     "experience":       s["experience"],
-                    "nice_to_have":     s["nice_to_have"],
                     "industry":         s["industry"],
                     "company_signal":   s["company_signal"],
                     "location_signal":  s["location_signal"],
