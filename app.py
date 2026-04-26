@@ -90,29 +90,42 @@ SENIORITY_WORDS = {
 }
 
 # Role archetypes: (english search terms, detection keywords DE+EN)
+# Keywords must match as whole words to avoid false positives like
+# "strategie" inside "Vertriebsstrategie" triggering "consulting"
 ROLE_ARCHETYPES = [
     (["sales manager", "account manager", "business development manager"],
-     ["vertrieb", "verkauf", "sales", "account manager", "key account", "vertriebsmanager"]),
+     [r"\bvertrieb\b", r"\bverkauf\b", r"\bsales\b", r"\baccount manager\b",
+      r"\bkey account\b", r"\bvertriebsmanager\b", r"\bvertriebsregion\b",
+      r"\bvertriebsstrategie\b", r"\bverkaufsverhandlung\b"]),
     (["strategy consultant", "management consultant"],
-     ["strategie", "strategy consultant", "management consultant", "unternehmensberater", "beratung"]),
+     [r"\bstrategy consultant\b", r"\bmanagement consultant\b",
+      r"\bunternehmensberater\b", r"\bstrategieberatung\b",
+      r"\bmanagementberatung\b", r"\bmckinsey\b", r"\bbcg\b", r"\bbain\b"]),
     (["software engineer", "developer", "software developer"],
-     ["entwickler", "software engineer", "developer", "programmier", "coding", "python", "java"]),
+     [r"\bentwickler\b", r"\bsoftware engineer\b", r"\bdeveloper\b",
+      r"\bprogrammier\b", r"\bcoding\b", r"\bpython\b", r"\bjava\b"]),
     (["product manager"],
-     ["produktmanager", "product manager", "produktmanagement"]),
+     [r"\bproduktmanager\b", r"\bproduct manager\b", r"\bproduktmanagement\b"]),
     (["project manager", "program manager"],
-     ["projektmanager", "projektleiter", "project manager", "program manager", "pmo"]),
+     [r"\bprojektmanager\b", r"\bprojektleiter\b", r"\bproject manager\b",
+      r"\bprogram manager\b", r"\bpmo\b"]),
     (["data scientist", "data analyst"],
-     ["data scientist", "data analyst", "machine learning", "ki", "artificial intelligence"]),
+     [r"\bdata scientist\b", r"\bdata analyst\b", r"\bmachine learning\b",
+      r"\bkünstliche intelligenz\b", r"\bartificial intelligence\b"]),
     (["marketing manager"],
-     ["marketing", "marketingmanager", "brand manager"]),
+     [r"\bmarketing manager\b", r"\bmarketingmanager\b", r"\bbrand manager\b"]),
     (["hr manager", "talent acquisition", "recruiter"],
-     ["personalreferent", "hr manager", "human resources", "recruiting", "talent"]),
+     [r"\bpersonalreferent\b", r"\bhr manager\b", r"\bhuman resources\b",
+      r"\brecruiting\b"]),
     (["finance manager", "controller"],
-     ["controller", "finance manager", "finanzmanager", "buchhaltung", "accounting"]),
+     [r"\bcontroller\b", r"\bfinance manager\b", r"\bfinanzmanager\b",
+      r"\bbuchhaltung\b", r"\baccounting\b"]),
     (["operations manager"],
-     ["operations", "betrieb", "supply chain", "logistik", "logistics"]),
-    (["digital transformation manager"],
-     ["digitalisierung", "digital transformation", "digitalen", "digital portfolio"]),
+     [r"\boperations manager\b", r"\bsupply chain\b", r"\blogistik\b",
+      r"\blogistics\b"]),
+    (["digital sales manager", "digital portfolio manager"],
+     [r"\bdigitalen portfolio\b", r"\bdigital portfolio\b",
+      r"\bdigitale lösungen\b", r"\bdigital solutions\b"]),
 ]
 
 # Industry archetypes: (english search terms, detection keywords DE+EN)
@@ -169,15 +182,14 @@ def detect_role_and_industry(jd_text: str):
     """Detect the best-matching role archetype and industries from JD text."""
     text = jd_text.lower()
 
-    # Score each role archetype
+    # Score each role archetype using regex word-boundary matching
     role_scores = []
     for search_terms, keywords in ROLE_ARCHETYPES:
-        score = sum(1 for kw in keywords if kw in text)
+        score = sum(1 for kw in keywords if re.search(kw, text))
         role_scores.append((score, search_terms))
     role_scores.sort(reverse=True)
-    # Pick top role (fall back to a generic professional if nothing matches)
     best_role_score, best_role_terms = role_scores[0]
-    role_titles = best_role_terms if best_role_score > 0 else ["professional", "specialist", "manager"]
+    role_titles = best_role_terms if best_role_score > 0 else ["specialist", "manager", "professional"]
 
     # Score each industry archetype — can match multiple
     industry_search_terms = []
@@ -283,7 +295,7 @@ def search_exa(query: str, api_key: str, n: int) -> list:
         json={
             "query": query,
             "category": "people",
-            "type": "auto",
+            "type": "neural",
             "num_results": n,
             "contents": {"text": {"max_characters": 8000}},
         },
