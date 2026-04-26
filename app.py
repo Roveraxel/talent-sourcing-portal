@@ -78,84 +78,117 @@ def get_secret(key: str) -> str:
         return ""
     return str(raw).strip().encode("ascii", errors="ignore").decode("ascii")
 
-# ── Scoring constants ─────────────────────────────────────────────────────────
+# ── JD intelligence — language-agnostic role/industry detection ───────────────
 
-MUST_HAVE_KEYWORDS = {
-    "strategic consulting": [
-        "strategy consultant", "management consultant", "consulting", "strategic consulting",
-        "strategy&", "monitor deloitte", "mckinsey", "bcg", "bain", "roland berger",
-        "oliver wyman", "accenture", "kpmg", "pwc", "deloitte", "advanta", "kearney",
-        "unternehmensberater", "unternehmensberatung", "strategieberater", "strategie",
-        "managementberater", "managementberatung", "berater", "beratung",
-    ],
-    "project/workstream management": [
-        "project manager", "workstream", "project management", "program manager", "pmo",
-        "led team", "managed team", "project lead", "engagement manager",
-        "projektmanagement", "projektleiter", "projektleitung", "teilprojekt",
-    ],
-    "client & stakeholder management": [
-        "client", "stakeholder", "senior management", "c-suite", "client engagement",
-        "client-facing", "executive", "board",
-        "kunden", "auftraggeber", "geschäftsführung", "vorstand", "kundenbeziehung",
-    ],
-    "structured problem-solving": [
-        "structured", "problem solving", "analysis", "analytical", "framework",
-        "hypothesis", "issue tree", "recommendations",
-        "analyse", "konzept", "strukturiert", "problemlösung", "analytisch",
-    ],
-    "German language": [
-        "deutsch", "german", "deutschkenntnisse", "muttersprache",
-        "deutschsprachig", "germany", "münchen", "berlin", "frankfurt", "hamburg",
-    ],
-    "English language": [
-        "english", "englisch", "bilingual", "fluent english", "englischkenntnisse",
-        "business english",
-    ],
-}
-
-NICE_TO_HAVE_KEYWORDS = {
-    "mentoring / junior development": [
-        "mentor", "coached", "junior", "team lead", "leadership", "guided",
-        "nachwuchs", "förderung", "teamführung",
-    ],
-    "entrepreneurial mindset": [
-        "entrepreneurial", "startup", "founder", "innovation",
-        "unternehmerisch", "gründer", "innovativ",
-    ],
-    "zero-defect delivery": [
-        "quality", "attention to detail", "excellence", "zero defect",
-        "qualität", "sorgfalt", "genauigkeit",
-    ],
-    "empathetic leadership": [
-        "empathetic", "empathy", "collaboration", "inclusive",
-        "empathie", "zusammenarbeit", "kollegial",
-    ],
-}
-
-COMPANY_TIER1 = [
-    "mckinsey", "bcg", "bain", "roland berger", "oliver wyman", "strategy&",
-    "monitor deloitte", "kearney", "arthur d little", "accenture strategy",
-    "advanta consulting", "siemens advanta", "boston consulting",
-]
-COMPANY_TIER2 = [
-    "accenture", "deloitte", "pwc", "kpmg", "ey", "capgemini", "porsche consulting",
-    "continental", "bosch", "siemens", "mercedes", "volkswagen", "bmw",
-    "thyssenkrupp", "basf", "bayer", "allianz",
-]
 SENIORITY_WORDS = {
     "partner": 5, "vice president": 5, "vp": 5,
     "director": 4, "principal": 4, "geschäftsführer": 4, "direktor": 4,
     "manager": 3, "staff": 3, "lead": 3, "leiter": 3, "projektleiter": 3, "teamleiter": 3,
-    "senior": 2, "senior consultant": 2,
+    "senior": 2, "leitend": 2,
     "associate": 1,
-    "analyst": 0, "junior": 0, "intern": 0,
+    "analyst": 0, "junior": 0, "intern": 0, "praktikant": 0,
 }
-INDUSTRIAL_WORDS = [
-    "industrial", "manufacturing", "automotive", "energy", "siemens", "machinery",
-    "engineering", "aerospace", "defense", "logistics", "utilities", "technology",
-    "digital transformation", "industrie", "fertigung", "maschinenbau", "energie",
-    "technologie", "digitalisierung",
+
+# Role archetypes: (english search terms, detection keywords DE+EN)
+ROLE_ARCHETYPES = [
+    (["sales manager", "account manager", "business development manager"],
+     ["vertrieb", "verkauf", "sales", "account manager", "key account", "vertriebsmanager"]),
+    (["strategy consultant", "management consultant"],
+     ["strategie", "strategy consultant", "management consultant", "unternehmensberater", "beratung"]),
+    (["software engineer", "developer", "software developer"],
+     ["entwickler", "software engineer", "developer", "programmier", "coding", "python", "java"]),
+    (["product manager"],
+     ["produktmanager", "product manager", "produktmanagement"]),
+    (["project manager", "program manager"],
+     ["projektmanager", "projektleiter", "project manager", "program manager", "pmo"]),
+    (["data scientist", "data analyst"],
+     ["data scientist", "data analyst", "machine learning", "ki", "artificial intelligence"]),
+    (["marketing manager"],
+     ["marketing", "marketingmanager", "brand manager"]),
+    (["hr manager", "talent acquisition", "recruiter"],
+     ["personalreferent", "hr manager", "human resources", "recruiting", "talent"]),
+    (["finance manager", "controller"],
+     ["controller", "finance manager", "finanzmanager", "buchhaltung", "accounting"]),
+    (["operations manager"],
+     ["operations", "betrieb", "supply chain", "logistik", "logistics"]),
+    (["digital transformation manager"],
+     ["digitalisierung", "digital transformation", "digitalen", "digital portfolio"]),
 ]
+
+# Industry archetypes: (english search terms, detection keywords DE+EN)
+INDUSTRY_ARCHETYPES = [
+    (["healthcare", "medical technology", "medtech", "hospital"],
+     ["gesundheit", "medizin", "medizintechnik", "healthineers", "klinik", "krankenhaus",
+      "healthcare", "medical", "radiolog", "diagnostik", "patient"]),
+    (["pharmaceutical", "biotech", "life sciences"],
+     ["pharma", "pharmaceutical", "biotech", "arzneimittel", "wirkstoff"]),
+    (["automotive"],
+     ["automobil", "automotive", "fahrzeug", "pkw", "zulieferer"]),
+    (["energy", "renewables", "utilities"],
+     ["energie", "energy", "strom", "solar", "wind", "erneuerbar", "utilities"]),
+    (["financial services", "banking", "insurance"],
+     ["finanz", "bank", "versicherung", "finance", "insurance", "kapital"]),
+    (["technology", "software", "IT"],
+     ["software", "technologie", "technology", "saas", "cloud", "plattform"]),
+    (["industrial", "manufacturing", "engineering"],
+     ["industrie", "industrial", "fertigung", "maschinenbau", "manufacturing", "engineering"]),
+    (["consulting", "professional services"],
+     ["beratung", "consulting", "consultant", "advisory"]),
+    (["retail", "consumer goods", "FMCG"],
+     ["handel", "retail", "konsumgüter", "fmcg", "consumer"]),
+]
+
+DE_STOPWORDS = {
+    "sie", "und", "der", "die", "das", "in", "für", "mit", "von", "auf", "an",
+    "zu", "den", "dem", "ein", "eine", "einer", "eines", "ist", "sind", "haben",
+    "ihre", "ihren", "ihrem", "auch", "als", "oder", "aber", "wie", "bei", "aus",
+    "nach", "über", "unter", "durch", "werden", "wird", "kann", "können", "unser",
+    "unsere", "dieser", "diese", "dieses", "sowie", "ggf", "insbesondere", "dabei",
+    "gemeinsam", "beim", "diesem", "dieser", "werden", "unseren", "einen", "neue",
+    "neue", "neuen", "weitere", "weiteren", "mehr", "sehr", "alle", "wir",
+}
+EN_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "you", "your", "our",
+    "are", "will", "have", "has", "been", "able", "also", "their", "they", "can",
+    "should", "must", "within", "across", "through", "between", "into", "about",
+    "including", "such", "both", "each", "its", "not", "all", "more", "new",
+}
+
+def extract_jd_key_terms(jd_text: str, top_n: int = 25) -> list:
+    """Extract the most distinctive content words from the JD for dynamic scoring."""
+    from collections import Counter
+    text = jd_text.lower()
+    # Extract words 4+ chars, including German umlauts
+    words = re.findall(r'\b[a-zäöüß]{4,}\b', text)
+    stopwords = DE_STOPWORDS | EN_STOPWORDS
+    freq = Counter(w for w in words if w not in stopwords)
+    return [w for w, _ in freq.most_common(top_n)]
+
+
+def detect_role_and_industry(jd_text: str):
+    """Detect the best-matching role archetype and industries from JD text."""
+    text = jd_text.lower()
+
+    # Score each role archetype
+    role_scores = []
+    for search_terms, keywords in ROLE_ARCHETYPES:
+        score = sum(1 for kw in keywords if kw in text)
+        role_scores.append((score, search_terms))
+    role_scores.sort(reverse=True)
+    # Pick top role (fall back to a generic professional if nothing matches)
+    best_role_score, best_role_terms = role_scores[0]
+    role_titles = best_role_terms if best_role_score > 0 else ["professional", "specialist", "manager"]
+
+    # Score each industry archetype — can match multiple
+    industry_search_terms = []
+    for search_terms, keywords in INDUSTRY_ARCHETYPES:
+        if any(kw in text for kw in keywords):
+            industry_search_terms.extend(search_terms[:2])
+    if not industry_search_terms:
+        industry_search_terms = ["technology", "business"]
+
+    return role_titles, industry_search_terms[:4]
+
 
 # ── JD parser ─────────────────────────────────────────────────────────────────
 
@@ -164,56 +197,59 @@ def parse_jd(jd_text: str, location_filter: str, seniority_opt: str,
     """Return structured requirements dict from JD text + UI filters."""
     text = jd_text.lower()
 
-    role_titles = []
-    for t in ["strategy consultant", "management consultant", "strategic consultant",
-              "engagement manager", "principal consultant", "senior advisor",
-              "business analyst", "director", "associate"]:
-        if t in text:
-            role_titles.append(t)
-    if not role_titles:
-        role_titles = ["strategy consultant", "management consultant"]
+    # Detect role and industry from JD content (not hardcoded defaults)
+    role_titles, detected_industries = detect_role_and_industry(jd_text)
 
     seniority_level_map = {
         "Senior / Manager": 2, "Staff / Principal": 3, "Director / VP": 4, "Any": 2,
     }
     seniority_label_map = {
         "Senior / Manager": "senior", "Staff / Principal": "principal",
-        "Director / VP": "director", "Any": "senior",
+        "Director / VP": "director", "Any": "",
     }
     seniority_level = seniority_level_map.get(seniority_opt, 2)
     seniority_label = seniority_label_map.get(seniority_opt, "senior")
     # Override from JD text
-    if any(w in text for w in ["director", "vp", "vice president"]):
+    if any(w in text for w in ["director", "vp", "vice president", "direktor"]):
         seniority_label = "director"
-    elif any(w in text for w in ["principal", "staff"]):
+    elif any(w in text for w in ["principal", "staff", "leitend"]):
         seniority_label = "principal"
-    elif any(w in text for w in ["senior", "sr."]):
+    elif any(w in text for w in ["senior", "sr.", "erfahren"]):
         seniority_label = "senior"
 
     locations = [l.strip() for l in location_filter.split(",") if l.strip()] or ["Germany"]
     location_country = locations[0].lower()
 
-    skill_signals = []
-    for label, kws in [
-        ("strategy", ["strategy", "strategic"]),
-        ("consulting", ["consulting", "consultant"]),
-        ("digital transformation", ["digital transformation", "digitalization"]),
-        ("project management", ["project management"]),
-        ("industrial", ["industrial", "manufacturing"]),
-        ("energy", ["energy", "renewables"]),
-    ]:
-        if any(k in text for k in kws):
-            skill_signals.append(label)
-
+    # Language signals
     lang_signals = []
-    if any(w in text for w in ["german", "deutsch", "germany"]):
+    if any(w in text for w in ["german", "deutsch", "deutschkenntnisse", "muttersprache"]):
         lang_signals.append("German")
-    if any(w in text for w in ["english", "englisch"]):
+    if any(w in text for w in ["english", "englisch", "englishkenntnisse"]):
         lang_signals.append("English")
 
-    query_parts = [seniority_label] + role_titles[:2] + skill_signals[:3] + lang_signals + [locations[0]]
+    # Extract company name if mentioned prominently (e.g. "Siemens Healthineers")
+    company_signals = []
+    for company in ["siemens healthineers", "siemens", "bmw", "volkswagen", "bosch",
+                    "bayer", "basf", "allianz", "sap", "deutsche bank", "lufthansa"]:
+        if company in text:
+            company_signals.append(company.title())
+            break
+
+    # Build the search query from detected role + industry + context
+    query_parts = []
+    if seniority_label:
+        query_parts.append(seniority_label)
+    query_parts.extend(role_titles[:2])
+    query_parts.extend(detected_industries[:2])
+    query_parts.extend(lang_signals)
+    query_parts.append(locations[0])
+    if company_signals:
+        query_parts.extend(company_signals)
     if extra_must:
         query_parts.append(extra_must)
+
+    # Key terms for dynamic scoring
+    key_terms = extract_jd_key_terms(jd_text)
 
     return {
         "role_titles": role_titles,
@@ -221,10 +257,11 @@ def parse_jd(jd_text: str, location_filter: str, seniority_opt: str,
         "seniority_label": seniority_label,
         "locations": locations,
         "location_country": location_country,
-        "industries": industry_tags or INDUSTRIAL_WORDS,
-        "must_have_skills": list(MUST_HAVE_KEYWORDS.keys()),
-        "years_exp_min": 4,
-        "query_text": " ".join(query_parts),
+        "industries": industry_tags or detected_industries,
+        "detected_industries": detected_industries,
+        "years_exp_min": 3,
+        "query_text": " ".join(dict.fromkeys(query_parts)),  # dedup preserving order
+        "jd_key_terms": key_terms,
     }
 
 # ── Candidate normalisation ───────────────────────────────────────────────────
@@ -504,69 +541,72 @@ def merge_candidates(candidate_lists: list) -> list:
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
-    """Score against JD requirements. All points must be earned."""
+    """
+    Score a candidate against the JD. Scoring is fully dynamic — driven by
+    key terms extracted from the actual JD text, not hardcoded role assumptions.
+    """
     text = (profile_text or "").lower()
 
-    # 1. Must-have skills (35 pts)
-    must_haves = jd_reqs.get("must_have_skills", list(MUST_HAVE_KEYWORDS.keys()))
-    mh_hits = {
-        skill: any(kw in text for kw in MUST_HAVE_KEYWORDS.get(skill, [skill.lower()]))
-        for skill in must_haves
-    }
-    mh_score = round(35 * sum(mh_hits.values()) / max(len(mh_hits), 1))
+    # 1. JD key-term overlap (40 pts) — how many distinctive JD terms appear in profile
+    key_terms = jd_reqs.get("jd_key_terms", [])
+    if key_terms:
+        hits = {term: (term in text) for term in key_terms}
+        hit_count = sum(hits.values())
+        # Generous curve: hitting 40% of terms = full marks
+        term_score = min(40, round(40 * hit_count / max(len(key_terms) * 0.4, 1)))
+        term_detail = {k: v for k, v in hits.items() if v}  # only show hits
+    else:
+        term_score = 20  # no terms extracted — neutral
+        term_detail = {}
 
-    # 2. Seniority (15 pts)
+    # 2. Role match (20 pts) — do role titles from JD appear in profile?
+    role_titles = jd_reqs.get("role_titles", [])
+    role_hits = sum(1 for r in role_titles if r.lower() in text)
+    role_score = min(20, round(20 * role_hits / max(len(role_titles), 1)))
+
+    # 3. Seniority (15 pts)
     target = jd_reqs.get("seniority_level", 2)
     detected = max((level for word, level in SENIORITY_WORDS.items() if word in text), default=0)
     diff = abs(detected - target)
     seniority_score = 15 if diff == 0 else (8 if diff == 1 else 0)
 
-    # 3. Experience years (10 pts)
-    years = [int(y) for y in re.findall(r'(\d+)\s*(?:year|yr)', text)]
-    max_years = max(years, default=0)
-    min_exp = jd_reqs.get("years_exp_min", 4)
-    exp_score = 10 if max_years >= min_exp else (7 if max_years >= min_exp - 1 else 3)
-
-    # 4. Nice-to-have (15 pts)
-    nth_hits = {skill: any(kw in text for kw in kws) for skill, kws in NICE_TO_HAVE_KEYWORDS.items()}
-    nth_score = round(15 * sum(nth_hits.values()) / max(len(nth_hits), 1))
-
-    # 5. Industry (10 pts)
-    industries = jd_reqs.get("industries", INDUSTRIAL_WORDS)
-    if any(ind.lower() in text for ind in industries):
-        industry_score = 10
-    elif any(w in text for w in INDUSTRIAL_WORDS):
-        industry_score = 5
+    # 4. Industry match (15 pts) — do detected industry terms appear?
+    detected_industries = jd_reqs.get("detected_industries", [])
+    if detected_industries and any(ind.lower() in text for ind in detected_industries):
+        industry_score = 15
+    elif detected_industries and any(
+        word in text for ind in detected_industries for word in ind.split()
+    ):
+        industry_score = 8
     else:
         industry_score = 0
 
-    # 6. Company signal (10 pts)
-    company_signal = (
-        10 if any(c in text for c in COMPANY_TIER1) else
-        5 if any(c in text for c in COMPANY_TIER2) else 0
-    )
-
-    # 7. Location (5 pts)
+    # 5. Location (5 pts)
     locs = [l.lower() for l in jd_reqs.get("locations", ["germany"])]
-    location_signal = 5 if any(l in text for l in locs) else (3 if "remote" in text else 0)
+    location_signal = 5 if any(l in text for l in locs) else (2 if "remote" in text else 0)
+
+    # Experience years (bonus, up to 5 pts)
+    years = [int(y) for y in re.findall(r'(\d+)\s*(?:year|yr|jahre|jahren)', text)]
+    max_years = max(years, default=0)
+    min_exp = jd_reqs.get("years_exp_min", 3)
+    exp_bonus = 5 if max_years >= min_exp else (3 if max_years >= min_exp - 1 else 0)
 
     # Data quality penalty
     wc = len(text.split())
-    quality_penalty = 10 if wc < 50 else (3 if wc < 150 else 0)
-    quality = "sparse" if wc < 50 else ("partial" if wc < 150 else "full")
+    quality_penalty = 15 if wc < 30 else (8 if wc < 100 else 0)
+    quality = "sparse" if wc < 30 else ("partial" if wc < 100 else "full")
 
-    total = (mh_score + seniority_score + exp_score + nth_score +
-             industry_score + company_signal + location_signal - quality_penalty)
+    total = term_score + role_score + seniority_score + industry_score + location_signal + exp_bonus - quality_penalty
 
     return {
-        "must_have_detail": mh_hits,
-        "must_have": mh_score,
+        "must_have_detail": term_detail,   # reuse this field for display
+        "must_have": term_score,
+        "role_match": role_score,
         "seniority": seniority_score,
-        "experience": exp_score,
-        "nice_to_have": nth_score,
         "industry": industry_score,
-        "company_signal": company_signal,
         "location_signal": location_signal,
+        "experience": exp_bonus,
+        "company_signal": 0,
         "quality_penalty": quality_penalty,
         "data_quality": quality,
         "total": max(0, min(100, total)),
@@ -583,42 +623,53 @@ def grade_label(score: int) -> str:
 # ── Boolean string builder ────────────────────────────────────────────────────
 
 def build_boolean_string(jd_text: str, refinement: str = "") -> str:
-    text = jd_text.lower()
+    """Build a Google X-Ray Boolean string from JD content — role agnostic."""
     ref = refinement.lower()
 
+    # Detect role terms from JD
+    role_titles, detected_industries = detect_role_and_industry(jd_text)
+    role_quoted = " OR ".join(f'"{t}"' for t in role_titles[:3])
+
+    # Seniority
+    text = jd_text.lower()
     seniority_terms = []
-    if any(w in text for w in ["senior", "sr."]):
-        seniority_terms += ['"senior"', '"sr."']
-    if "manager" in text:
+    if any(w in text for w in ["senior", "sr.", "leitend", "erfahren"]):
+        seniority_terms.append('"senior"')
+    if any(w in text for w in ["manager", "leiter", "lead"]):
         seniority_terms.append('"manager"')
-    if "director" in text:
+    if any(w in text for w in ["director", "direktor", "vp"]):
         seniority_terms.append('"director"')
     if not seniority_terms:
-        seniority_terms = ['"senior"', '"manager"', '"lead"']
+        seniority_terms = ['"senior"', '"manager"']
+    seniority_str = f'({" OR ".join(seniority_terms)})'
 
-    if "mbb" in ref or any(w in ref for w in ["mckinsey", "bcg", "bain"]):
-        company_filter = '("McKinsey" OR "BCG" OR "Bain")'
-    elif "big4" in ref or "big 4" in ref or "deloitte" in ref:
-        company_filter = '("Deloitte" OR "PwC" OR "KPMG" OR "EY")'
-    elif "siemens" in ref:
-        company_filter = '"Siemens"'
-    else:
-        company_filter = '("Siemens" OR "McKinsey" OR "BCG" OR "Bain" OR "Deloitte" OR "Accenture" OR "Roland Berger")'
+    # Language filter
+    lang_filter = ""
+    if any(w in text for w in ["deutsch", "german", "muttersprache"]):
+        lang_filter = '("German" OR "Deutsch")'
 
-    exclude = "-recruiter -intern -junior"
-    if "no automotive" in ref or "remove automotive" in ref:
-        exclude += " -automotive -Porsche -BMW -Daimler"
+    # Refinement overrides
+    company_filter = ""
+    if refinement:
+        ref_words = ref.split()
+        # Extract quoted company or focus hints
+        company_filter = refinement[:80]  # pass through as-is for specificity
 
-    lang_filter = '("German" OR "Deutsch")' if "german" in text else ""
+    # Exclusions
+    exclude = "-recruiter -intern -junior -praktikant"
+    if any(w in ref for w in ["no automotive", "remove automotive"]):
+        exclude += " -automotive"
 
     parts = [
         'site:linkedin.com/in/',
-        '("strategy consultant" OR "management consultant" OR "strategic consultant")',
-        f'({" OR ".join(seniority_terms)})',
+        f'({role_quoted})',
+        seniority_str,
     ]
     if lang_filter:
         parts.append(lang_filter)
-    parts += [company_filter, exclude]
+    if company_filter:
+        parts.append(f'"{company_filter}"')
+    parts.append(exclude)
     return " ".join(parts)
 
 # ── Excel export ──────────────────────────────────────────────────────────────
@@ -997,14 +1048,14 @@ with tab_results:
                     st.caption(str(row.get("profile_text", ""))[:800])
                 with c2:
                     st.markdown("**Score breakdown:**")
-                    mh_detail = row.get("must_have_detail", {})
-                    if isinstance(mh_detail, dict):
-                        for skill, hit in mh_detail.items():
-                            st.write(f"{'✅' if hit else '❌'} {skill}")
-                    st.metric("Must-Have", f"{row.get('must_have', 0)}/35")
+                    term_hits = row.get("must_have_detail", {})
+                    if isinstance(term_hits, dict) and term_hits:
+                        st.caption("JD terms found in profile:")
+                        st.write(", ".join(term_hits.keys()))
+                    st.metric("JD Term Match", f"{row.get('must_have', 0)}/40")
+                    st.metric("Role Match", f"{row.get('role_match', 0)}/20")
                     st.metric("Seniority", f"{row.get('seniority', 0)}/15")
-                    st.metric("Industry", f"{row.get('industry', 0)}/10")
-                    st.metric("Company Signal", f"{row.get('company_signal', 0)}/10")
+                    st.metric("Industry", f"{row.get('industry', 0)}/15")
 
         st.divider()
         st.markdown("#### 📥 Export")
@@ -1055,10 +1106,11 @@ with tab_string:
     st.markdown("""
 | Intent | What to type in "Refine search" |
 |---|---|
-| MBB alumni only | `focus on MBB background only` |
-| Remove automotive | `remove automotive, focus on energy` |
-| German native speakers | `German native speakers only` |
-| More senior | `only Principal or Director level` |
-| Big4 consulting | `Big4 or top-tier consulting firms` |
-| Specific city | `Munich only` |
+| Focus on a specific company | `only candidates from Siemens Healthineers` |
+| Exclude an industry | `remove automotive` or `no pharma` |
+| Require a language | `German native speakers only` |
+| Narrow seniority | `only director or VP level` |
+| Narrow location | `Munich only` or `Berlin and Hamburg` |
+| Add a skill | `must have SAP experience` |
+| Narrow background | `must have hospital or clinic experience` |
     """)
