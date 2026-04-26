@@ -331,10 +331,13 @@ def search_google_cse(query: str, api_key: str, cse_id: str, n: int) -> list:
 
 def search_apollo(jd_reqs: dict, api_key: str, n: int) -> list:
     resp = requests.post(
-        "https://api.apollo.io/v1/mixed_people_search",
-        headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
+        "https://api.apollo.io/api/v1/mixed_people_search",
+        headers={
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+            "x-api-key": api_key,
+        },
         json={
-            "api_key": api_key,
             "person_titles": jd_reqs["role_titles"],
             "person_locations": jd_reqs["locations"],
             "page": 1,
