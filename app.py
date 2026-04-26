@@ -172,21 +172,11 @@ INDUSTRIAL_WORDS = [
 
 
 def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
-    """Score a candidate against JD requirements.
-
-    Since Exa already filtered results to matching people, candidates start with
-    a relevance base of 20 pts. Additional dimensions score on top of that.
-    This avoids penalising good candidates purely because their profile highlights
-    are short or written in German with unfamiliar phrasing.
-    """
+    """Score a candidate against JD requirements. No base score — earn it."""
     text = (profile_text or "").lower()
     scores = {}
 
-    # Base relevance: Exa returned this person for our specific query — they already match.
-    base = 20
-
-    # 1. Must-have skills (35 pts — but we start from a 20pt floor)
-    # Effective must-have contribution scaled to 35 pts max on top of base.
+    # 1. Must-have skills (35 pts)
     must_haves = jd_reqs.get("must_have_skills", list(MUST_HAVE_KEYWORDS.keys()))
     mh_hits = {}
     for skill in must_haves:
@@ -270,9 +260,9 @@ def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
     scores["quality_penalty"] = quality_penalty
     scores["data_quality"] = quality
 
-    total = (base + mh_score + seniority_score + exp_score + nth_score
+    total = (mh_score + seniority_score + exp_score + nth_score
              + industry_score + company_score + location_score - quality_penalty)
-    scores["total"] = max(0, min(105, total))
+    scores["total"] = max(0, min(100, total))
 
     return scores
 
@@ -283,6 +273,94 @@ def grade_label(score: int) -> str:
     if score >= 50:
         return "🟡 Potential"
     return "🔴 Weak Match"
+
+
+def build_exa_query_from_jd(jd_text: str, location: str = "", refinement: str = "") -> str:
+    """
+    Build a semantically rich Exa search query from the actual JD text.
+    Extracts: role title, key skills, seniority, location, company signals.
+    This is what gets sent to the Exa API — not the dropdown values.
+    """
+    text = jd_text.lower()
+
+    # --- Role title ---
+    role_title = "strategy consultant"
+    for title in ["strategy consultant", "management consultant", "strategic consultant",
+                   "business analyst", "engagement manager", "senior advisor", "director",
+                   "vice president", "principal", "associate", "senior manager"]:
+        if title in text:
+            role_title = title
+            break
+
+    # --- Seniority ---
+    seniority = ""
+    if any(w in text for w in ["senior", "sr.", "lead", "principal", "staff"]):
+        seniority = "senior"
+    if any(w in text for w in ["director", "vp", "vice president"]):
+        seniority = "director"
+    if any(w in text for w in ["manager", "management"]):
+        seniority = seniority or "manager"
+
+    # --- Key skills (pick up to 4 distinct signals from JD) ---
+    skill_signals = []
+    skill_map = {
+        "consulting": ["consulting", "consultant", "beratung"],
+        "strategy": ["strategy", "strategic", "strategie"],
+        "project management": ["project management", "project manager", "projektmanagement"],
+        "digital transformation": ["digital transformation", "digitalization", "digitalisierung"],
+        "MBA": ["mba", "business school"],
+        "structured problem-solving": ["structured", "problem-solving", "analytical"],
+        "client management": ["client", "stakeholder", "engagement"],
+        "industrial": ["industrial", "manufacturing", "industrie"],
+        "energy": ["energy", "renewables", "power"],
+        "technology": ["technology", "tech", "software", "it "],
+    }
+    for label, keywords in skill_map.items():
+        if any(kw in text for kw in keywords):
+            skill_signals.append(label)
+        if len(skill_signals) >= 4:
+            break
+
+    # --- Languages ---
+    lang_parts = []
+    if any(w in text for w in ["german", "deutsch", "germany", "münchen", "berlin", "frankfurt"]):
+        lang_parts.append("German")
+    if "english" in text or "englisch" in text:
+        lang_parts.append("English")
+
+    # --- Location ---
+    loc = location.strip() or ""
+    if not loc and any(w in text for w in ["germany", "münchen", "berlin", "frankfurt", "hamburg"]):
+        loc = "Germany"
+
+    # --- Refinement overrides ---
+    company_hint = ""
+    ref_lower = refinement.lower()
+    if "mbb" in ref_lower or "mckinsey" in ref_lower or "bcg" in ref_lower or "bain" in ref_lower:
+        company_hint = "McKinsey BCG Bain"
+    elif "big4" in ref_lower or "big 4" in ref_lower:
+        company_hint = "Deloitte PwC KPMG EY"
+    elif "siemens" in ref_lower:
+        company_hint = "Siemens"
+
+    # --- Assemble ---
+    parts = []
+    if seniority:
+        parts.append(seniority)
+    parts.append(role_title)
+    if skill_signals:
+        parts.extend(skill_signals[:3])
+    if lang_parts:
+        parts.extend(lang_parts)
+    if loc:
+        parts.append(loc)
+    if company_hint:
+        parts.append(company_hint)
+    if refinement and not company_hint:
+        # Pass raw refinement text as extra context
+        parts.append(refinement[:80])
+
+    return " ".join(parts)
 
 
 def build_boolean_string(jd_text: str, refinement: str = "") -> str:
@@ -345,7 +423,7 @@ def search_exa(query: str, api_key: str, num_results: int = 20) -> list:
             "type": "auto",
             "num_results": num_results,
             "includeDomains": ["linkedin.com"],
-            "contents": {"highlights": {"max_characters": 3000}},
+            "contents": {"text": {"max_characters": 8000}},
         },
         timeout=30,
     )
@@ -355,13 +433,16 @@ def search_exa(query: str, api_key: str, num_results: int = 20) -> list:
 
 def parse_result(r: dict) -> dict:
     """Flatten an Exa result into a flat candidate dict."""
-    highlights = r.get("highlights", [])
-    full_text = " ".join(highlights) if isinstance(highlights, list) else str(highlights)
+    # Use full text content; fall back to highlights if text is unavailable
+    text_content = r.get("text") or ""
+    if not text_content:
+        highlights = r.get("highlights", [])
+        text_content = " ".join(highlights) if isinstance(highlights, list) else str(highlights)
     return {
         "name": r.get("author") or r.get("title", "Unknown"),
         "headline": r.get("title", ""),
         "linkedin_url": r.get("url", ""),
-        "highlights": full_text[:1500],
+        "highlights": text_content[:6000],
         "published": r.get("publishedDate", ""),
     }
 
@@ -540,26 +621,10 @@ with tab_search:
                 "industries": industry_tags or INDUSTRIAL_WORDS,
             }
 
-            # Build query
-            seniority_str = {
-                "Senior / Manager": "senior manager",
-                "Staff / Principal": "staff principal",
-                "Director / VP": "director VP",
-                "Any": "senior",
-            }.get(seniority_opt, "senior")
-
-            industry_str = " ".join(industry_tags) if industry_tags else "industrial technology"
-            base_query = f"{seniority_str} strategy consultant {location_filter} {industry_str}"
+            # Build Exa query from JD text (not just dropdowns)
+            base_query = build_exa_query_from_jd(jd_text, location_filter, refinement)
             if extra_must:
                 base_query += f" {extra_must}"
-            if refinement:
-                # Incorporate refinement into query
-                if "mbb" in refinement.lower():
-                    base_query += " McKinsey BCG Bain"
-                elif "big4" in refinement.lower():
-                    base_query += " Deloitte PwC KPMG EY"
-                if "german" in refinement.lower() and "native" in refinement.lower():
-                    base_query += " native German speaker"
 
             boolean_str = build_boolean_string(jd_text, refinement)
             st.session_state.boolean_str = boolean_str
