@@ -1,24 +1,38 @@
 """
-Talent Sourcing Portal — Streamlit app
-Powered by Exa people search API + rule-based scoring
+Multi-source Talent Sourcing Portal — Streamlit app
+
+Search sources  : Exa · Google CSE · Apollo · People Data Labs · Crustdata
+Enrichment      : FullEnrich · Lusha
+Scoring         : Rule-based weighted rubric (100 pts)
 
 Deploy on Streamlit Cloud:
-  1. Push this folder to a GitHub repo
-  2. Go to share.streamlit.io → New app → point to app.py
-  3. In Advanced settings → Secrets, add:
-       EXA_API_KEY = "your-key-here"
-       APP_PASSWORD = "your-team-password"
+  1. Push to GitHub → share.streamlit.io → New app → app.py
+  2. Advanced settings → Secrets — add whichever keys you have:
+
+     APP_PASSWORD        = "your-team-password"
+     EXA_API_KEY         = "..."          # exa.ai
+     GOOGLE_API_KEY      = "..."          # console.cloud.google.com
+     GOOGLE_CSE_ID       = "..."          # programmablesearchengine.google.com
+     APOLLO_API_KEY      = "..."          # app.apollo.io
+     PDL_API_KEY         = "..."          # peopledatalabs.com
+     CRUSTDATA_API_KEY   = "..."          # crustdata.com
+     FULLENRICH_API_KEY  = "..."          # fullenrich.com  (enrichment)
+     LUSHA_API_KEY       = "..."          # lusha.com       (enrichment)
+
+  At least one search source key is required. All others are optional —
+  the app gracefully skips any source without a key.
 """
 
-import streamlit as st
-import requests
-import pandas as pd
-import json
 import re
-from io import BytesIO
+import urllib.parse
 from datetime import date
+from io import BytesIO
 
-# ── Page config ──────────────────────────────────────────────────────────────
+import pandas as pd
+import requests
+import streamlit as st
+
+# ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="Talent Sourcing Portal",
@@ -30,28 +44,23 @@ st.set_page_config(
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 
 def check_password():
-    """Simple shared-password gate."""
-    # Try to get password from secrets (production) or fall back to session
     try:
-        correct_password = st.secrets["APP_PASSWORD"]
+        correct = st.secrets["APP_PASSWORD"]
     except Exception:
-        correct_password = None  # Will use inline input below
-
+        correct = None
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
     if not st.session_state.authenticated:
         st.markdown("## 🔐 Talent Sourcing Portal")
         st.markdown("Enter the team password to continue.")
-        col1, col2 = st.columns([2, 3])
+        col1, _ = st.columns([2, 3])
         with col1:
             entered = st.text_input("Password", type="password", key="pw_input")
             if st.button("Login", type="primary"):
-                if correct_password and entered == correct_password:
+                if correct and entered == correct:
                     st.session_state.authenticated = True
                     st.rerun()
-                elif not correct_password and entered:
-                    # No secrets configured — accept any non-empty password for local dev
+                elif not correct and entered:
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
@@ -60,86 +69,66 @@ def check_password():
 
 check_password()
 
-# ── Get API key ───────────────────────────────────────────────────────────────
+# ── Secrets helper ────────────────────────────────────────────────────────────
 
-def get_exa_key():
-    """Load Exa API key from secrets and sanitize to plain ASCII string.
-    Streamlit secrets can introduce Unicode quote characters or BOM markers
-    that break HTTP header encoding — strip and re-encode defensively.
-    """
+def get_secret(key: str) -> str:
     try:
-        raw = st.secrets["EXA_API_KEY"]
+        raw = st.secrets[key]
     except Exception:
         return ""
-    # Coerce to plain str, strip whitespace and any invisible Unicode artifacts
     return str(raw).strip().encode("ascii", errors="ignore").decode("ascii")
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Scoring constants ─────────────────────────────────────────────────────────
 
-# Keywords include German equivalents — LinkedIn profiles in Germany are often
-# written in German, so English-only matching scores everyone at zero.
 MUST_HAVE_KEYWORDS = {
     "strategic consulting": [
-        # English
         "strategy consultant", "management consultant", "consulting", "strategic consulting",
         "strategy&", "monitor deloitte", "mckinsey", "bcg", "bain", "roland berger",
         "oliver wyman", "accenture", "kpmg", "pwc", "deloitte", "advanta", "kearney",
-        # German
-        "unternehmensberater", "unternehmensberatung", "strategieberater", "strategieberatung",
-        "managementberater", "managementberatung", "berater", "beratung", "consultant",
-        "strategie", "unternehmensstrategien", "strategische beratung",
+        "unternehmensberater", "unternehmensberatung", "strategieberater", "strategie",
+        "managementberater", "managementberatung", "berater", "beratung",
     ],
     "project/workstream management": [
-        # English
         "project manager", "workstream", "project management", "program manager", "pmo",
         "led team", "managed team", "project lead", "engagement manager",
-        # German
-        "projektmanagement", "projektleiter", "projektleitung", "projektverantwortung",
-        "workstreams", "teilprojekt", "arbeitspakete", "programmmanagement",
+        "projektmanagement", "projektleiter", "projektleitung", "teilprojekt",
     ],
-    "client stakeholder management": [
-        # English
+    "client & stakeholder management": [
         "client", "stakeholder", "senior management", "c-suite", "client engagement",
         "client-facing", "executive", "board",
-        # German
-        "kunden", "auftraggeber", "stakeholder", "geschäftsführung", "vorstand",
-        "kundenprojekt", "kundenbeziehung", "ansprechpartner", "präsentation",
+        "kunden", "auftraggeber", "geschäftsführung", "vorstand", "kundenbeziehung",
     ],
     "structured problem-solving": [
-        # English
         "structured", "problem solving", "analysis", "analytical", "framework",
-        "hypothesis", "issue tree", "structured analysis", "recommendations",
-        # German
+        "hypothesis", "issue tree", "recommendations",
         "analyse", "konzept", "strukturiert", "problemlösung", "analytisch",
-        "handlungsempfehlungen", "lösungsansatz", "konzeption",
     ],
     "German language": [
-        "deutsch", "german", "deutschkenntnisse", "muttersprache", "auf deutsch",
+        "deutsch", "german", "deutschkenntnisse", "muttersprache",
         "deutschsprachig", "germany", "münchen", "berlin", "frankfurt", "hamburg",
-        "düsseldorf", "köln", "stuttgart", "de -",
     ],
     "English language": [
         "english", "englisch", "bilingual", "fluent english", "englischkenntnisse",
-        "englischsprachig", "business english",
+        "business english",
     ],
 }
 
 NICE_TO_HAVE_KEYWORDS = {
-    "mentoring/junior development": [
-        "mentor", "coached", "junior", "team lead", "leadership", "guided", "feedback",
-        "nachwuchs", "förderung", "junior berater", "teamführung", "mitarbeiterentwicklung",
+    "mentoring / junior development": [
+        "mentor", "coached", "junior", "team lead", "leadership", "guided",
+        "nachwuchs", "förderung", "teamführung",
     ],
     "entrepreneurial mindset": [
-        "entrepreneurial", "startup", "founder", "innovation", "entrepreneur",
-        "unternehmerisch", "gründer", "innovativ", "eigeninitiative",
+        "entrepreneurial", "startup", "founder", "innovation",
+        "unternehmerisch", "gründer", "innovativ",
     ],
     "zero-defect delivery": [
-        "quality", "attention to detail", "high standards", "excellence", "zero defect",
-        "qualität", "sorgfalt", "genauigkeit", "null-fehler",
+        "quality", "attention to detail", "excellence", "zero defect",
+        "qualität", "sorgfalt", "genauigkeit",
     ],
     "empathetic leadership": [
-        "empathetic", "empathy", "collaboration", "inclusive", "human-centered",
-        "empathie", "zusammenarbeit", "kollegial", "wertschätzend",
+        "empathetic", "empathy", "collaboration", "inclusive",
+        "empathie", "zusammenarbeit", "kollegial",
     ],
 }
 
@@ -150,72 +139,397 @@ COMPANY_TIER1 = [
 ]
 COMPANY_TIER2 = [
     "accenture", "deloitte", "pwc", "kpmg", "ey", "capgemini", "porsche consulting",
-    "continental", "bosch", "siemens", "mercedes", "volkswagen", "bmw", "zf",
-    "trumpf", "thyssenkrupp", "basf", "bayer", "allianz",
+    "continental", "bosch", "siemens", "mercedes", "volkswagen", "bmw",
+    "thyssenkrupp", "basf", "bayer", "allianz",
 ]
-
 SENIORITY_WORDS = {
-    "manager": 3, "director": 4, "vp": 5, "vice president": 5,
-    "senior": 2, "staff": 3, "principal": 4, "lead": 3, "leiter": 3,
-    "partner": 5, "associate": 1, "analyst": 0, "junior": 0, "intern": 0,
-    # German
-    "senior consultant": 2, "projektleiter": 3, "teamleiter": 3,
-    "geschäftsführer": 4, "direktor": 4,
+    "partner": 5, "vice president": 5, "vp": 5,
+    "director": 4, "principal": 4, "geschäftsführer": 4, "direktor": 4,
+    "manager": 3, "staff": 3, "lead": 3, "leiter": 3, "projektleiter": 3, "teamleiter": 3,
+    "senior": 2, "senior consultant": 2,
+    "associate": 1,
+    "analyst": 0, "junior": 0, "intern": 0,
 }
-
 INDUSTRIAL_WORDS = [
     "industrial", "manufacturing", "automotive", "energy", "siemens", "machinery",
     "engineering", "aerospace", "defense", "logistics", "utilities", "technology",
     "digital transformation", "industrie", "fertigung", "maschinenbau", "energie",
-    "technologie", "digitalisierung", "automatisierung",
+    "technologie", "digitalisierung",
 ]
 
+# ── JD parser ─────────────────────────────────────────────────────────────────
+
+def parse_jd(jd_text: str, location_filter: str, seniority_opt: str,
+             industry_tags: list, extra_must: str) -> dict:
+    """Return structured requirements dict from JD text + UI filters."""
+    text = jd_text.lower()
+
+    role_titles = []
+    for t in ["strategy consultant", "management consultant", "strategic consultant",
+              "engagement manager", "principal consultant", "senior advisor",
+              "business analyst", "director", "associate"]:
+        if t in text:
+            role_titles.append(t)
+    if not role_titles:
+        role_titles = ["strategy consultant", "management consultant"]
+
+    seniority_level_map = {
+        "Senior / Manager": 2, "Staff / Principal": 3, "Director / VP": 4, "Any": 2,
+    }
+    seniority_label_map = {
+        "Senior / Manager": "senior", "Staff / Principal": "principal",
+        "Director / VP": "director", "Any": "senior",
+    }
+    seniority_level = seniority_level_map.get(seniority_opt, 2)
+    seniority_label = seniority_label_map.get(seniority_opt, "senior")
+    # Override from JD text
+    if any(w in text for w in ["director", "vp", "vice president"]):
+        seniority_label = "director"
+    elif any(w in text for w in ["principal", "staff"]):
+        seniority_label = "principal"
+    elif any(w in text for w in ["senior", "sr."]):
+        seniority_label = "senior"
+
+    locations = [l.strip() for l in location_filter.split(",") if l.strip()] or ["Germany"]
+    location_country = locations[0].lower()
+
+    skill_signals = []
+    for label, kws in [
+        ("strategy", ["strategy", "strategic"]),
+        ("consulting", ["consulting", "consultant"]),
+        ("digital transformation", ["digital transformation", "digitalization"]),
+        ("project management", ["project management"]),
+        ("industrial", ["industrial", "manufacturing"]),
+        ("energy", ["energy", "renewables"]),
+    ]:
+        if any(k in text for k in kws):
+            skill_signals.append(label)
+
+    lang_signals = []
+    if any(w in text for w in ["german", "deutsch", "germany"]):
+        lang_signals.append("German")
+    if any(w in text for w in ["english", "englisch"]):
+        lang_signals.append("English")
+
+    query_parts = [seniority_label] + role_titles[:2] + skill_signals[:3] + lang_signals + [locations[0]]
+    if extra_must:
+        query_parts.append(extra_must)
+
+    return {
+        "role_titles": role_titles,
+        "seniority_level": seniority_level,
+        "seniority_label": seniority_label,
+        "locations": locations,
+        "location_country": location_country,
+        "industries": industry_tags or INDUSTRIAL_WORDS,
+        "must_have_skills": list(MUST_HAVE_KEYWORDS.keys()),
+        "years_exp_min": 4,
+        "query_text": " ".join(query_parts),
+    }
+
+# ── Candidate normalisation ───────────────────────────────────────────────────
+
+def norm(overrides: dict) -> dict:
+    base = {
+        "name": "", "headline": "", "company_name": "", "location": "",
+        "linkedin_url": "", "profile_text": "", "source": "", "email": "", "phone": "",
+    }
+    base.update(overrides)
+    return base
+
+# ── Source: Exa ───────────────────────────────────────────────────────────────
+
+def search_exa(query: str, api_key: str, n: int) -> list:
+    resp = requests.post(
+        "https://api.exa.ai/search",
+        headers={"x-api-key": api_key, "Content-Type": "application/json"},
+        json={
+            "query": query,
+            "category": "people",
+            "type": "auto",
+            "num_results": n,
+            "contents": {"text": {"max_characters": 8000}},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    out = []
+    for r in resp.json().get("results", []):
+        url = r.get("url", "")
+        text = r.get("text") or ""
+        title = r.get("title", "")
+        out.append(norm({
+            "name": r.get("author") or title.split(" - ")[0].split("|")[0].strip(),
+            "headline": title,
+            "linkedin_url": url if "linkedin.com/in/" in url else "",
+            "profile_text": text[:6000],
+            "source": "Exa",
+        }))
+    return out
+
+# ── Source: Google CSE (X-Ray LinkedIn) ──────────────────────────────────────
+
+def search_google_cse(query: str, api_key: str, cse_id: str, n: int) -> list:
+    xray = f'site:linkedin.com/in/ {query}'
+    resp = requests.get(
+        "https://www.googleapis.com/customsearch/v1",
+        params={"key": api_key, "cx": cse_id, "q": xray, "num": min(n, 10)},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    out = []
+    for item in resp.json().get("items", []):
+        title = item.get("title", "")
+        name = title.split(" - ")[0].split("|")[0].strip()
+        out.append(norm({
+            "name": name,
+            "headline": title,
+            "linkedin_url": item.get("link", ""),
+            "profile_text": item.get("snippet", ""),
+            "source": "Google CSE",
+        }))
+    return out
+
+# ── Source: Apollo ────────────────────────────────────────────────────────────
+
+def search_apollo(jd_reqs: dict, api_key: str, n: int) -> list:
+    resp = requests.post(
+        "https://api.apollo.io/v1/mixed_people_search",
+        headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
+        json={
+            "api_key": api_key,
+            "person_titles": jd_reqs["role_titles"],
+            "person_locations": jd_reqs["locations"],
+            "page": 1,
+            "per_page": min(n, 25),
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    out = []
+    for p in resp.json().get("people", []):
+        org = p.get("organization") or {}
+        history = p.get("employment_history") or []
+        parts = [p.get("title", ""), org.get("name", ""), p.get("city", ""), p.get("country", "")]
+        for job in history[:5]:
+            t = job.get("title", "")
+            co = job.get("organization_name", "")
+            if t or co:
+                parts.append(f"{t} at {co}".strip(" at"))
+        out.append(norm({
+            "name": f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
+            "headline": p.get("title", ""),
+            "company_name": org.get("name", ""),
+            "location": f"{p.get('city', '')} {p.get('country', '')}".strip(),
+            "linkedin_url": p.get("linkedin_url") or "",
+            "email": p.get("email") or "",
+            "profile_text": " | ".join(filter(None, parts)),
+            "source": "Apollo",
+        }))
+    return out
+
+# ── Source: People Data Labs ──────────────────────────────────────────────────
+
+def search_pdl(jd_reqs: dict, api_key: str, n: int) -> list:
+    titles_clause = " OR ".join(
+        f"job_title LIKE '%{t}%'" for t in jd_reqs["role_titles"][:3]
+    )
+    country = jd_reqs["location_country"]
+    sql = (
+        f"SELECT * FROM person WHERE ({titles_clause}) "
+        f"AND location_country='{country}' LIMIT {n}"
+    )
+    resp = requests.get(
+        "https://api.peopledatalabs.com/v5/person/search",
+        headers={"X-Api-Key": api_key},
+        params={"sql": sql, "size": n},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    out = []
+    for p in resp.json().get("data", []):
+        experience = p.get("experience") or []
+        parts = [p.get("job_title", ""), p.get("job_company_name", ""), p.get("location_name", "")]
+        for exp in experience[:5]:
+            t = (exp.get("title") or {}).get("name", "")
+            co = (exp.get("company") or {}).get("name", "")
+            if t or co:
+                parts.append(f"{t} at {co}".strip(" at"))
+        skills = [s.get("name", "") for s in (p.get("skills") or [])]
+        if skills:
+            parts.append("Skills: " + ", ".join(skills[:10]))
+        li_id = p.get("linkedin_id", "")
+        li_url = p.get("linkedin_url") or (f"https://linkedin.com/in/{li_id}" if li_id else "")
+        emails = p.get("emails") or [{}]
+        out.append(norm({
+            "name": p.get("full_name", ""),
+            "headline": p.get("job_title", ""),
+            "company_name": p.get("job_company_name", ""),
+            "location": p.get("location_name", ""),
+            "linkedin_url": li_url,
+            "email": emails[0].get("address", ""),
+            "profile_text": " | ".join(filter(None, parts)),
+            "source": "PDL",
+        }))
+    return out
+
+# ── Source: Crustdata ─────────────────────────────────────────────────────────
+
+def search_crustdata(jd_reqs: dict, api_key: str, n: int) -> list:
+    resp = requests.post(
+        "https://api.crustdata.com/screener/person/search",
+        headers={"Authorization": f"Token {api_key}", "Content-Type": "application/json"},
+        json={
+            "filters": {
+                "job_title": jd_reqs["role_titles"][0],
+                "location": jd_reqs["locations"][0],
+            },
+            "page": 1,
+            "limit": n,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    people = data.get("data") or data.get("profiles") or data.get("results") or []
+    out = []
+    for p in people:
+        out.append(norm({
+            "name": p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip(),
+            "headline": p.get("headline") or p.get("title", ""),
+            "company_name": p.get("company") or p.get("current_company", ""),
+            "location": p.get("location", ""),
+            "linkedin_url": p.get("linkedin_url", ""),
+            "profile_text": p.get("summary") or p.get("headline", ""),
+            "source": "Crustdata",
+        }))
+    return out
+
+# ── Enrichment: FullEnrich ────────────────────────────────────────────────────
+
+def enrich_fullenrich(candidates: list, api_key: str) -> list:
+    enriched = []
+    for c in candidates:
+        if not c.get("linkedin_url"):
+            enriched.append(c)
+            continue
+        try:
+            resp = requests.post(
+                "https://api.fullenrich.com/v1/enrich/person",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"linkedin_url": c["linkedin_url"]},
+                timeout=15,
+            )
+            if resp.ok:
+                d = resp.json().get("person") or {}
+                if d.get("full_name"):
+                    c["name"] = d["full_name"]
+                if d.get("headline"):
+                    c["headline"] = d["headline"]
+                if d.get("email"):
+                    c["email"] = d["email"]
+                if d.get("summary"):
+                    c["profile_text"] = (c["profile_text"] + " " + d["summary"]).strip()
+                c["source"] += " +FullEnrich"
+        except Exception:
+            pass
+        enriched.append(c)
+    return enriched
+
+# ── Enrichment: Lusha ─────────────────────────────────────────────────────────
+
+def enrich_lusha(candidates: list, api_key: str) -> list:
+    enriched = []
+    for c in candidates:
+        parts = (c.get("name") or "").split()
+        if len(parts) < 2 or not c.get("company_name"):
+            enriched.append(c)
+            continue
+        try:
+            resp = requests.get(
+                "https://api.lusha.com/person",
+                headers={"api_key": api_key},
+                params={
+                    "firstName": parts[0],
+                    "lastName": " ".join(parts[1:]),
+                    "company": c["company_name"],
+                },
+                timeout=15,
+            )
+            if resp.ok:
+                d = resp.json()
+                emails = d.get("emailAddresses") or []
+                phones = d.get("phoneNumbers") or []
+                if emails:
+                    c["email"] = emails[0].get("emailAddress", c.get("email", ""))
+                if phones:
+                    c["phone"] = phones[0].get("localizedPhoneNumber", "")
+                c["source"] += " +Lusha"
+        except Exception:
+            pass
+        enriched.append(c)
+    return enriched
+
+# ── Merge & Deduplicate ───────────────────────────────────────────────────────
+
+def merge_candidates(candidate_lists: list) -> list:
+    all_cands = [c for lst in candidate_lists for c in lst]
+    seen_li, seen_names, merged = set(), set(), []
+    for c in all_cands:
+        li = (c.get("linkedin_url") or "").rstrip("/").lower()
+        name = (c.get("name") or "").lower().strip()
+        if li and li in seen_li:
+            # Merge into existing record
+            for ex in merged:
+                if (ex.get("linkedin_url") or "").rstrip("/").lower() == li:
+                    if c["source"] not in ex["source"]:
+                        ex["source"] += f", {c['source']}"
+                    if len(c.get("profile_text", "")) > len(ex.get("profile_text", "")):
+                        ex["profile_text"] = c["profile_text"]
+                    if not ex.get("email") and c.get("email"):
+                        ex["email"] = c["email"]
+                    if not ex.get("company_name") and c.get("company_name"):
+                        ex["company_name"] = c["company_name"]
+                    break
+            continue
+        if name and name in seen_names and not li:
+            continue
+        if li:
+            seen_li.add(li)
+        if name:
+            seen_names.add(name)
+        merged.append(c)
+    return merged
+
+# ── Scoring ───────────────────────────────────────────────────────────────────
 
 def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
-    """Score a candidate against JD requirements. No base score — earn it."""
+    """Score against JD requirements. All points must be earned."""
     text = (profile_text or "").lower()
-    scores = {}
 
     # 1. Must-have skills (35 pts)
     must_haves = jd_reqs.get("must_have_skills", list(MUST_HAVE_KEYWORDS.keys()))
-    mh_hits = {}
-    for skill in must_haves:
-        keywords = MUST_HAVE_KEYWORDS.get(skill, [skill.lower()])
-        hit = any(kw in text for kw in keywords)
-        mh_hits[skill] = hit
-    # Scale: full match = 35, zero match = 0. But base covers the floor.
+    mh_hits = {
+        skill: any(kw in text for kw in MUST_HAVE_KEYWORDS.get(skill, [skill.lower()]))
+        for skill in must_haves
+    }
     mh_score = round(35 * sum(mh_hits.values()) / max(len(mh_hits), 1))
-    scores["must_have_detail"] = mh_hits
-    scores["must_have"] = mh_score
 
     # 2. Seniority (15 pts)
-    target_seniority = jd_reqs.get("seniority_level", 2)  # default: Senior
-    detected_level = 0
-    for word, level in SENIORITY_WORDS.items():
-        if word in text:
-            detected_level = max(detected_level, level)
-    diff = abs(detected_level - target_seniority)
+    target = jd_reqs.get("seniority_level", 2)
+    detected = max((level for word, level in SENIORITY_WORDS.items() if word in text), default=0)
+    diff = abs(detected - target)
     seniority_score = 15 if diff == 0 else (8 if diff == 1 else 0)
-    scores["seniority"] = seniority_score
 
-    # 3. Experience years (10 pts) — rough heuristic from text
-    year_mentions = re.findall(r'(\d+)\s*(?:year|yr)', text)
-    max_years = max([int(y) for y in year_mentions], default=0)
+    # 3. Experience years (10 pts)
+    years = [int(y) for y in re.findall(r'(\d+)\s*(?:year|yr)', text)]
+    max_years = max(years, default=0)
     min_exp = jd_reqs.get("years_exp_min", 4)
-    if max_years >= min_exp:
-        exp_score = 10
-    elif max_years >= min_exp - 1:
-        exp_score = 7
-    else:
-        exp_score = 3
-    scores["experience"] = exp_score
+    exp_score = 10 if max_years >= min_exp else (7 if max_years >= min_exp - 1 else 3)
 
     # 4. Nice-to-have (15 pts)
-    nth_hits = {}
-    for skill, keywords in NICE_TO_HAVE_KEYWORDS.items():
-        nth_hits[skill] = any(kw in text for kw in keywords)
+    nth_hits = {skill: any(kw in text for kw in kws) for skill, kws in NICE_TO_HAVE_KEYWORDS.items()}
     nth_score = round(15 * sum(nth_hits.values()) / max(len(nth_hits), 1))
-    scores["nice_to_have"] = nth_score
 
     # 5. Industry (10 pts)
     industries = jd_reqs.get("industries", INDUSTRIAL_WORDS)
@@ -225,46 +539,38 @@ def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
         industry_score = 5
     else:
         industry_score = 0
-    scores["industry"] = industry_score
 
     # 6. Company signal (10 pts)
-    if any(c in text for c in COMPANY_TIER1):
-        company_score = 10
-    elif any(c in text for c in COMPANY_TIER2):
-        company_score = 5
-    else:
-        company_score = 0
-    scores["company"] = company_score
+    company_signal = (
+        10 if any(c in text for c in COMPANY_TIER1) else
+        5 if any(c in text for c in COMPANY_TIER2) else 0
+    )
 
     # 7. Location (5 pts)
-    locations = [loc.lower() for loc in jd_reqs.get("location", ["germany"])]
-    if any(loc in text for loc in locations):
-        location_score = 5
-    elif "remote" in text:
-        location_score = 3
-    else:
-        location_score = 0
-    scores["location"] = location_score
+    locs = [l.lower() for l in jd_reqs.get("locations", ["germany"])]
+    location_signal = 5 if any(l in text for l in locs) else (3 if "remote" in text else 0)
 
     # Data quality penalty
-    word_count = len(text.split())
-    if word_count < 50:
-        quality_penalty = 10
-        quality = "sparse"
-    elif word_count < 150:
-        quality_penalty = 3
-        quality = "partial"
-    else:
-        quality_penalty = 0
-        quality = "full"
-    scores["quality_penalty"] = quality_penalty
-    scores["data_quality"] = quality
+    wc = len(text.split())
+    quality_penalty = 10 if wc < 50 else (3 if wc < 150 else 0)
+    quality = "sparse" if wc < 50 else ("partial" if wc < 150 else "full")
 
-    total = (mh_score + seniority_score + exp_score + nth_score
-             + industry_score + company_score + location_score - quality_penalty)
-    scores["total"] = max(0, min(100, total))
+    total = (mh_score + seniority_score + exp_score + nth_score +
+             industry_score + company_signal + location_signal - quality_penalty)
 
-    return scores
+    return {
+        "must_have_detail": mh_hits,
+        "must_have": mh_score,
+        "seniority": seniority_score,
+        "experience": exp_score,
+        "nice_to_have": nth_score,
+        "industry": industry_score,
+        "company_signal": company_signal,
+        "location_signal": location_signal,
+        "quality_penalty": quality_penalty,
+        "data_quality": quality,
+        "total": max(0, min(100, total)),
+    }
 
 
 def grade_label(score: int) -> str:
@@ -274,130 +580,36 @@ def grade_label(score: int) -> str:
         return "🟡 Potential"
     return "🔴 Weak Match"
 
-
-def build_exa_query_from_jd(jd_text: str, location: str = "", refinement: str = "") -> str:
-    """
-    Build a semantically rich Exa search query from the actual JD text.
-    Extracts: role title, key skills, seniority, location, company signals.
-    This is what gets sent to the Exa API — not the dropdown values.
-    """
-    text = jd_text.lower()
-
-    # --- Role title ---
-    role_title = "strategy consultant"
-    for title in ["strategy consultant", "management consultant", "strategic consultant",
-                   "business analyst", "engagement manager", "senior advisor", "director",
-                   "vice president", "principal", "associate", "senior manager"]:
-        if title in text:
-            role_title = title
-            break
-
-    # --- Seniority ---
-    seniority = ""
-    if any(w in text for w in ["senior", "sr.", "lead", "principal", "staff"]):
-        seniority = "senior"
-    if any(w in text for w in ["director", "vp", "vice president"]):
-        seniority = "director"
-    if any(w in text for w in ["manager", "management"]):
-        seniority = seniority or "manager"
-
-    # --- Key skills (pick up to 4 distinct signals from JD) ---
-    skill_signals = []
-    skill_map = {
-        "consulting": ["consulting", "consultant", "beratung"],
-        "strategy": ["strategy", "strategic", "strategie"],
-        "project management": ["project management", "project manager", "projektmanagement"],
-        "digital transformation": ["digital transformation", "digitalization", "digitalisierung"],
-        "MBA": ["mba", "business school"],
-        "structured problem-solving": ["structured", "problem-solving", "analytical"],
-        "client management": ["client", "stakeholder", "engagement"],
-        "industrial": ["industrial", "manufacturing", "industrie"],
-        "energy": ["energy", "renewables", "power"],
-        "technology": ["technology", "tech", "software", "it "],
-    }
-    for label, keywords in skill_map.items():
-        if any(kw in text for kw in keywords):
-            skill_signals.append(label)
-        if len(skill_signals) >= 4:
-            break
-
-    # --- Languages ---
-    lang_parts = []
-    if any(w in text for w in ["german", "deutsch", "germany", "münchen", "berlin", "frankfurt"]):
-        lang_parts.append("German")
-    if "english" in text or "englisch" in text:
-        lang_parts.append("English")
-
-    # --- Location ---
-    loc = location.strip() or ""
-    if not loc and any(w in text for w in ["germany", "münchen", "berlin", "frankfurt", "hamburg"]):
-        loc = "Germany"
-
-    # --- Refinement overrides ---
-    company_hint = ""
-    ref_lower = refinement.lower()
-    if "mbb" in ref_lower or "mckinsey" in ref_lower or "bcg" in ref_lower or "bain" in ref_lower:
-        company_hint = "McKinsey BCG Bain"
-    elif "big4" in ref_lower or "big 4" in ref_lower:
-        company_hint = "Deloitte PwC KPMG EY"
-    elif "siemens" in ref_lower:
-        company_hint = "Siemens"
-
-    # --- Assemble ---
-    parts = []
-    if seniority:
-        parts.append(seniority)
-    parts.append(role_title)
-    if skill_signals:
-        parts.extend(skill_signals[:3])
-    if lang_parts:
-        parts.extend(lang_parts)
-    if loc:
-        parts.append(loc)
-    if company_hint:
-        parts.append(company_hint)
-    if refinement and not company_hint:
-        # Pass raw refinement text as extra context
-        parts.append(refinement[:80])
-
-    return " ".join(parts)
-
+# ── Boolean string builder ────────────────────────────────────────────────────
 
 def build_boolean_string(jd_text: str, refinement: str = "") -> str:
-    """Generate a Google X-Ray Boolean string from JD text."""
     text = jd_text.lower()
+    ref = refinement.lower()
 
-    # Detect seniority
     seniority_terms = []
     if any(w in text for w in ["senior", "sr."]):
-        seniority_terms = ['"senior"', '"sr."']
-    if any(w in text for w in ["manager", "management"]):
+        seniority_terms += ['"senior"', '"sr."']
+    if "manager" in text:
         seniority_terms.append('"manager"')
-    if any(w in text for w in ["director"]):
+    if "director" in text:
         seniority_terms.append('"director"')
     if not seniority_terms:
         seniority_terms = ['"senior"', '"manager"', '"lead"']
 
-    # Apply refinements
-    refinement_lower = refinement.lower()
-    company_filter = ""
-    exclude_filter = "-recruiter -intern -junior"
-
-    if "mbb" in refinement_lower or "mckinsey" in refinement_lower or "bcg" in refinement_lower or "bain" in refinement_lower:
+    if "mbb" in ref or any(w in ref for w in ["mckinsey", "bcg", "bain"]):
         company_filter = '("McKinsey" OR "BCG" OR "Bain")'
-    elif "big4" in refinement_lower or "big 4" in refinement_lower or "deloitte" in refinement_lower:
+    elif "big4" in ref or "big 4" in ref or "deloitte" in ref:
         company_filter = '("Deloitte" OR "PwC" OR "KPMG" OR "EY")'
-    elif "siemens" in refinement_lower:
+    elif "siemens" in ref:
         company_filter = '"Siemens"'
     else:
         company_filter = '("Siemens" OR "McKinsey" OR "BCG" OR "Bain" OR "Deloitte" OR "Accenture" OR "Roland Berger")'
 
-    if "no automotive" in refinement_lower or "remove automotive" in refinement_lower:
-        exclude_filter += " -automotive -Porsche -BMW -Daimler"
+    exclude = "-recruiter -intern -junior"
+    if "no automotive" in ref or "remove automotive" in ref:
+        exclude += " -automotive -Porsche -BMW -Daimler"
 
-    lang_filter = ""
-    if "german" in text:
-        lang_filter = '("German" OR "Deutsch")'
+    lang_filter = '("German" OR "Deutsch")' if "german" in text else ""
 
     parts = [
         'site:linkedin.com/in/',
@@ -406,102 +618,70 @@ def build_boolean_string(jd_text: str, refinement: str = "") -> str:
     ]
     if lang_filter:
         parts.append(lang_filter)
-    parts.append(company_filter)
-    parts.append(exclude_filter)
-
+    parts += [company_filter, exclude]
     return " ".join(parts)
 
-
-def search_exa(query: str, api_key: str, num_results: int = 20) -> list:
-    """Call Exa people search API, restricted to LinkedIn profiles."""
-    resp = requests.post(
-        "https://api.exa.ai/search",
-        headers={"x-api-key": api_key, "Content-Type": "application/json"},
-        json={
-            "query": query,
-            "category": "people",
-            "type": "auto",
-            "num_results": num_results,
-            "includeDomains": ["linkedin.com"],
-            "contents": {"text": {"max_characters": 8000}},
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json().get("results", [])
-
-
-def parse_result(r: dict) -> dict:
-    """Flatten an Exa result into a flat candidate dict."""
-    # Use full text content; fall back to highlights if text is unavailable
-    text_content = r.get("text") or ""
-    if not text_content:
-        highlights = r.get("highlights", [])
-        text_content = " ".join(highlights) if isinstance(highlights, list) else str(highlights)
-    return {
-        "name": r.get("author") or r.get("title", "Unknown"),
-        "headline": r.get("title", ""),
-        "linkedin_url": r.get("url", ""),
-        "highlights": text_content[:6000],
-        "published": r.get("publishedDate", ""),
-    }
-
+# ── Excel export ──────────────────────────────────────────────────────────────
 
 def build_excel_bytes(df: pd.DataFrame, jd_text: str, boolean_str: str) -> bytes:
-    """Return Excel bytes for download."""
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import PatternFill, Font, Alignment
+        from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
 
         wb = Workbook()
         ws = wb.active
         ws.title = "Candidates"
 
-        headers = ["Rank", "Score", "Grade", "Name", "Headline", "LinkedIn URL",
+        headers = ["Rank", "Score", "Grade", "Name", "Headline", "Company",
+                   "Location", "LinkedIn URL", "Email", "Phone", "Source",
                    "Must-Have Skills", "Data Quality", "Profile Highlights"]
-        col_widths = [6, 7, 18, 25, 40, 30, 40, 12, 60]
+        col_widths = [5, 7, 18, 25, 35, 25, 20, 30, 28, 16, 20, 45, 12, 50]
 
-        header_fill = PatternFill("solid", fgColor="1F3864")
-        header_font = Font(bold=True, color="FFFFFF", size=11)
-        green_fill = PatternFill("solid", fgColor="C6EFCE")
-        yellow_fill = PatternFill("solid", fgColor="FFEB9C")
-        red_fill = PatternFill("solid", fgColor="FFC7CE")
-        wrap = Alignment(wrap_text=True, vertical="top")
+        hfill = PatternFill("solid", fgColor="1F3864")
+        hfont = Font(bold=True, color="FFFFFF", size=11)
+        green  = PatternFill("solid", fgColor="C6EFCE")
+        yellow = PatternFill("solid", fgColor="FFEB9C")
+        red    = PatternFill("solid", fgColor="FFC7CE")
+        wrap   = Alignment(wrap_text=True, vertical="top")
         center = Alignment(horizontal="center", vertical="center")
 
         ws.append(headers)
-        for i, (cell, width) in enumerate(zip(ws[1], col_widths), 1):
-            cell.fill = header_fill
-            cell.font = header_font
+        for i, (cell, w) in enumerate(zip(ws[1], col_widths), 1):
+            cell.fill = hfill
+            cell.font = hfont
             cell.alignment = center
-            ws.column_dimensions[get_column_letter(i)].width = width
+            ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
 
         for _, row in df.iterrows():
             score = int(row.get("score", 0))
-            fill = green_fill if score >= 75 else (yellow_fill if score >= 50 else red_fill)
-            mh_detail = row.get("must_have_detail", {})
-            mh_str = ", ".join(f"{k} {'✓' if v else '✗'}" for k, v in mh_detail.items()) if isinstance(mh_detail, dict) else ""
+            fill = green if score >= 75 else (yellow if score >= 50 else red)
+            mh = row.get("must_have_detail", {})
+            mh_str = ", ".join(f"{k} {'✓' if v else '✗'}" for k, v in mh.items()) if isinstance(mh, dict) else ""
             ws.append([
                 int(row.get("rank", 0)),
                 score,
                 grade_label(score),
                 str(row.get("name", "")),
                 str(row.get("headline", "")),
+                str(row.get("company_name", "")),
+                str(row.get("location", "")),
                 str(row.get("linkedin_url", "")),
+                str(row.get("email", "")),
+                str(row.get("phone", "")),
+                str(row.get("source", "")),
                 mh_str,
                 str(row.get("data_quality", "")),
-                str(row.get("highlights", ""))[:500],
+                str(row.get("profile_text", ""))[:400],
             ])
-            row_idx = ws.max_row
-            for cell in ws[row_idx]:
+            ri = ws.max_row
+            for cell in ws[ri]:
                 cell.fill = fill
                 cell.alignment = wrap
-            ws.row_dimensions[row_idx].height = 60
+            ws.row_dimensions[ri].height = 55
 
-        # Sheet 2: search artefacts
         ws2 = wb.create_sheet("Search Artefacts")
         ws2.column_dimensions["A"].width = 25
         ws2.column_dimensions["B"].width = 90
@@ -519,51 +699,84 @@ def build_excel_bytes(df: pd.DataFrame, jd_text: str, boolean_str: str) -> bytes
         buf = BytesIO()
         wb.save(buf)
         return buf.getvalue()
-    except Exception as e:
-        # Fallback to CSV bytes if openpyxl unavailable
+    except Exception:
         buf = BytesIO()
         df.to_csv(buf, index=False)
         return buf.getvalue()
 
+# ── Session state ─────────────────────────────────────────────────────────────
 
-# ── Session state init ────────────────────────────────────────────────────────
+for _k in ["results_df", "source_stats", "boolean_str", "search_query", "jd_text"]:
+    if _k not in st.session_state:
+        st.session_state[_k] = None if _k in ["results_df", "source_stats"] else ""
 
-if "results_df" not in st.session_state:
-    st.session_state.results_df = None
-if "boolean_str" not in st.session_state:
-    st.session_state.boolean_str = ""
-if "search_query" not in st.session_state:
-    st.session_state.search_query = ""
-if "jd_text" not in st.session_state:
-    st.session_state.jd_text = ""
+# ── Load all secrets ──────────────────────────────────────────────────────────
+
+EXA_KEY        = get_secret("EXA_API_KEY")
+GOOGLE_KEY     = get_secret("GOOGLE_API_KEY")
+GOOGLE_CSE_ID  = get_secret("GOOGLE_CSE_ID")
+APOLLO_KEY     = get_secret("APOLLO_API_KEY")
+PDL_KEY        = get_secret("PDL_API_KEY")
+CRUSTDATA_KEY  = get_secret("CRUSTDATA_API_KEY")
+FULLENRICH_KEY = get_secret("FULLENRICH_API_KEY")
+LUSHA_KEY      = get_secret("LUSHA_API_KEY")
+
+# (api_key_or_bool, display_name, secret_hint)
+SEARCH_SOURCES = [
+    (EXA_KEY,                          "Exa",        "EXA_API_KEY"),
+    (GOOGLE_KEY and GOOGLE_CSE_ID,     "Google CSE", "GOOGLE_API_KEY + GOOGLE_CSE_ID"),
+    (APOLLO_KEY,                       "Apollo",     "APOLLO_API_KEY"),
+    (PDL_KEY,                          "PDL",        "PDL_API_KEY"),
+    (CRUSTDATA_KEY,                    "Crustdata",  "CRUSTDATA_API_KEY"),
+]
+ENRICH_SOURCES = [
+    (FULLENRICH_KEY, "FullEnrich", "FULLENRICH_API_KEY"),
+    (LUSHA_KEY,      "Lusha",      "LUSHA_API_KEY"),
+]
+SOURCE_COLORS = {
+    "Exa": "🔵", "Google CSE": "🔴", "Apollo": "🟠", "PDL": "🟣", "Crustdata": "🟤",
+}
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-
-exa_key = get_exa_key()
 
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
 
-    if not exa_key:
-        st.error("⚠️ EXA_API_KEY not found in secrets. Ask your admin to configure it.")
+    st.markdown("### 🔌 Search Sources")
+    active_count = 0
+    for key, name, hint in SEARCH_SOURCES:
+        if key:
+            st.caption(f"✅ **{SOURCE_COLORS.get(name, '⚫')} {name}** — active")
+            active_count += 1
+        else:
+            st.caption(f"⬜ **{name}** — add `{hint}` to secrets")
 
-    num_results = st.slider("Results per search", 5, 50, 20)
+    st.markdown("### 🧬 Enrichment")
+    for key, name, hint in ENRICH_SOURCES:
+        if key:
+            st.caption(f"✅ **{name}** — active")
+        else:
+            st.caption(f"⬜ **{name}** — add `{hint}` to secrets")
 
     st.divider()
-    st.markdown("### 🎯 Scoring Weights")
-    st.caption("Adjust what matters most for this search")
-    w_must = st.slider("Must-have skills", 0, 50, 35, 5)
-    w_seniority = st.slider("Seniority match", 0, 25, 15, 5)
-    w_company = st.slider("Company signal", 0, 20, 10, 5)
+    num_results = st.slider("Results per source", 5, 50, 20)
+    enrich_top_n = st.slider(
+        "Enrich top N candidates", 0, 20, 0, 5,
+        help="Run FullEnrich / Lusha on the top-ranked candidates after initial scoring. 0 = skip.",
+    )
 
     st.divider()
     st.markdown("### 📖 About")
-    st.caption("Searches LinkedIn profiles via Exa's people index. Scoring is rule-based — add a Claude API key for AI-powered grading.")
+    st.caption(
+        "Multi-source talent search: Exa · Google CSE · Apollo · PDL · Crustdata.  \n"
+        "Enrichment: FullEnrich · Lusha.  \n"
+        "Results are deduplicated and scored on a 100-point rubric."
+    )
 
 # ── Main UI ───────────────────────────────────────────────────────────────────
 
 st.markdown("# 🔍 Talent Sourcing Portal")
-st.caption("Paste a Job Description → get ranked candidates from LinkedIn → export to Excel")
+st.caption("Paste a JD → search across multiple sources → deduplicate & score → export")
 
 tab_search, tab_results, tab_string = st.tabs(["📋 Search", "📊 Results", "🔧 Search String"])
 
@@ -583,72 +796,125 @@ with tab_search:
     with col2:
         st.markdown("#### Quick Filters")
         location_filter = st.text_input("Location", value="Germany", placeholder="Germany, Munich...")
-        seniority_opt = st.selectbox("Seniority", ["Senior / Manager", "Staff / Principal", "Director / VP", "Any"])
+        seniority_opt = st.selectbox(
+            "Seniority", ["Senior / Manager", "Staff / Principal", "Director / VP", "Any"]
+        )
         industry_tags = st.multiselect(
             "Industries",
             ["industrial", "technology", "energy", "automotive", "fintech", "healthcare", "manufacturing"],
             default=["industrial", "technology", "energy"],
         )
-        extra_must = st.text_input("Additional must-have keyword", placeholder="e.g. Python, MBA, fluent German")
-
+        extra_must = st.text_input("Additional keyword", placeholder="e.g. MBA, fluent German")
         st.markdown("#### Refinement")
         refinement = st.text_input(
             "Refine search (natural language)",
-            placeholder='e.g. "focus on MBB alumni only" or "remove automotive"',
-            key="refinement_input",
+            placeholder='e.g. "MBB alumni only" or "remove automotive"',
         )
+
+    # Preview boolean string before running
+    if jd_text.strip():
+        preview_bool = build_boolean_string(jd_text, refinement)
+        with st.expander("🔍 Preview & edit Boolean / X-Ray string before running", expanded=False):
+            st.text_area(
+                "Google X-Ray string (used by Google CSE source)",
+                value=preview_bool, height=80, key="preview_bool",
+            )
+            st.caption(
+                "Exa, Apollo, and PDL use a structured query derived from the JD text. "
+                "The Boolean string above is used for the Google CSE LinkedIn X-Ray search."
+            )
+
+    if active_count == 0:
+        st.warning("⚠️ No API keys configured. Add at least `EXA_API_KEY` to Streamlit secrets.")
 
     if st.button("🚀 Run Search", type="primary", use_container_width=True):
         if not jd_text.strip():
             st.error("Please paste a Job Description first.")
-        elif not exa_key:
-            st.error("Exa API key not configured. Ask your admin to add EXA_API_KEY to Streamlit secrets.")
+        elif active_count == 0:
+            st.error("No API keys configured.")
         else:
             st.session_state.jd_text = jd_text
-
-            # Build JD requirements dict
-            seniority_map = {
-                "Senior / Manager": 2,
-                "Staff / Principal": 3,
-                "Director / VP": 4,
-                "Any": 2,
-            }
-            jd_reqs = {
-                "must_have_skills": list(MUST_HAVE_KEYWORDS.keys()),
-                "location": [loc.strip() for loc in location_filter.split(",")],
-                "seniority_level": seniority_map.get(seniority_opt, 2),
-                "years_exp_min": 4,
-                "industries": industry_tags or INDUSTRIAL_WORDS,
-            }
-
-            # Build Exa query from JD text (not just dropdowns)
-            base_query = build_exa_query_from_jd(jd_text, location_filter, refinement)
-            if extra_must:
-                base_query += f" {extra_must}"
-
+            jd_reqs = parse_jd(jd_text, location_filter, seniority_opt, industry_tags, extra_must)
             boolean_str = build_boolean_string(jd_text, refinement)
             st.session_state.boolean_str = boolean_str
-            st.session_state.search_query = base_query
+            st.session_state.search_query = jd_reqs["query_text"]
 
-            with st.spinner(f"Searching Exa for '{base_query[:60]}...'"):
+            source_stats: dict = {}
+            all_results: list = []
+            active_sources = [(key, name) for key, name, _ in SEARCH_SOURCES if key]
+            progress = st.progress(0, text="Starting multi-source search...")
+
+            for i, (key, name) in enumerate(active_sources):
+                progress.progress(i / len(active_sources), text=f"Searching {name}…")
                 try:
-                    raw_results = search_exa(base_query, exa_key, num_results)
-                    candidates = []
-                    for r in raw_results:
-                        c = parse_result(r)
-                        scores = score_candidate(c["highlights"], jd_reqs)
-                        c.update(scores)
-                        c["grade"] = grade_label(c["total"])
-                        c["score"] = c["total"]
-                        candidates.append(c)
+                    if name == "Exa":
+                        results = search_exa(jd_reqs["query_text"], EXA_KEY, num_results)
+                    elif name == "Google CSE":
+                        results = search_google_cse(jd_reqs["query_text"], GOOGLE_KEY, GOOGLE_CSE_ID, num_results)
+                    elif name == "Apollo":
+                        results = search_apollo(jd_reqs, APOLLO_KEY, num_results)
+                    elif name == "PDL":
+                        results = search_pdl(jd_reqs, PDL_KEY, num_results)
+                    elif name == "Crustdata":
+                        results = search_crustdata(jd_reqs, CRUSTDATA_KEY, num_results)
+                    else:
+                        results = []
+                    source_stats[name] = len(results)
+                    all_results.append(results)
+                except Exception as e:
+                    st.warning(f"⚠️ {name} error: {e}")
+                    source_stats[name] = 0
+                    all_results.append([])
 
-                    df = pd.DataFrame(candidates)
-                    df = df.sort_values("score", ascending=False).reset_index(drop=True)
-                    df["rank"] = df.index + 1
-                    st.session_state.results_df = df
-                    st.success(f"✅ Found {len(df)} candidates. Switch to the **Results** tab.")
-                except requests.exceptions.RequestException as e:
-                    st.error(f"Exa API error: {e}")
+            progress.progress(0.85, text="Merging & deduplicating…")
+            merged = merge_candidates(all_results)
+
+            # Enrichment: score first to pick top N, then enrich, then re-score rest
+            if enrich_top_n > 0 and (FULLENRICH_KEY or LUSHA_KEY):
+                for c in merged:
+                    s = score_candidate(c["profile_text"], jd_reqs)
+                    c["_pre_score"] = s["total"]
+                merged.sort(key=lambda x: x.get("_pre_score", 0), reverse=True)
+                top, rest = merged[:enrich_top_n], merged[enrich_top_n:]
+                if FULLENRICH_KEY:
+                    progress.progress(0.90, text="Enriching with FullEnrich…")
+                    top = enrich_fullenrich(top, FULLENRICH_KEY)
+                if LUSHA_KEY:
+                    progress.progress(0.95, text="Enriching with Lusha…")
+                    top = enrich_lusha(top, LUSHA_KEY)
+                merged = top + rest
+
+            progress.progress(0.97, text="Scoring…")
+            candidates = []
+            for c in merged:
+                s = score_candidate(c["profile_text"], jd_reqs)
+                c.update({
+                    "must_have_detail": s["must_have_detail"],
+                    "must_have":        s["must_have"],
+                    "seniority":        s["seniority"],
+                    "experience":       s["experience"],
+                    "nice_to_have":     s["nice_to_have"],
+                    "industry":         s["industry"],
+                    "company_signal":   s["company_signal"],
+                    "location_signal":  s["location_signal"],
+                    "quality_penalty":  s["quality_penalty"],
+                    "data_quality":     s["data_quality"],
+                    "score":            s["total"],
+                    "grade":            grade_label(s["total"]),
+                })
+                candidates.append(c)
+
+            df = pd.DataFrame(candidates).sort_values("score", ascending=False).reset_index(drop=True)
+            df["rank"] = df.index + 1
+            st.session_state.results_df = df
+            st.session_state.source_stats = source_stats
+            progress.empty()
+
+            stats_str = " · ".join(f"{k}: {v}" for k, v in source_stats.items())
+            st.success(
+                f"✅ **{len(df)} unique candidates** across {len(active_sources)} sources "
+                f"({stats_str}). Switch to the **Results** tab."
+            )
 
 # ── TAB 2: Results ────────────────────────────────────────────────────────────
 
@@ -658,61 +924,79 @@ with tab_results:
     if df is None:
         st.info("Run a search first to see results here.")
     else:
-        # Summary metrics
-        strong = (df["score"] >= 75).sum()
-        potential = ((df["score"] >= 50) & (df["score"] < 75)).sum()
-        weak = (df["score"] < 50).sum()
+        # Per-source breakdown
+        if st.session_state.source_stats:
+            src_items = list(st.session_state.source_stats.items())
+            cols = st.columns(len(src_items))
+            for col, (src, cnt) in zip(cols, src_items):
+                col.metric(f"{SOURCE_COLORS.get(src, '⚫')} {src}", cnt)
+            st.divider()
 
+        # Grade summary
+        strong    = int((df["score"] >= 75).sum())
+        potential = int(((df["score"] >= 50) & (df["score"] < 75)).sum())
+        weak      = int((df["score"] < 50).sum())
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Candidates", len(df))
+        m1.metric("Total (deduplicated)", len(df))
         m2.metric("🟢 Strong Match", strong)
         m3.metric("🟡 Potential", potential)
         m4.metric("🔴 Weak Match", weak)
-
         st.divider()
 
-        # Filter
         grade_filter = st.multiselect(
             "Filter by grade",
             ["🟢 Strong Match", "🟡 Potential", "🔴 Weak Match"],
-            default=["🟢 Strong Match"],
+            default=["🟢 Strong Match", "🟡 Potential"],
         )
         filtered_df = df[df["grade"].isin(grade_filter)] if grade_filter else df
 
-        # Display table
-        display_cols = ["rank", "score", "grade", "name", "headline", "data_quality", "linkedin_url"]
+        display_cols = ["rank", "score", "grade", "name", "headline", "company_name",
+                        "location", "email", "phone", "source", "data_quality", "linkedin_url"]
         available = [c for c in display_cols if c in filtered_df.columns]
 
         st.dataframe(
             filtered_df[available].rename(columns={
                 "rank": "Rank", "score": "Score", "grade": "Grade",
-                "name": "Name", "headline": "Headline",
-                "data_quality": "Data Quality", "linkedin_url": "LinkedIn"
+                "name": "Name", "headline": "Headline", "company_name": "Company",
+                "location": "Location", "email": "Email", "phone": "Phone",
+                "source": "Source", "data_quality": "Data Quality", "linkedin_url": "LinkedIn",
             }),
             use_container_width=True,
-            height=400,
+            height=420,
             column_config={
                 "LinkedIn": st.column_config.LinkColumn("LinkedIn"),
-                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=105),
+                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
             },
             hide_index=True,
         )
 
         st.divider()
-
-        # Candidate detail expanders
         st.markdown("#### 📋 Candidate Details")
         for _, row in filtered_df.head(10).iterrows():
             score = int(row.get("score", 0))
-            grade = row.get("grade", "")
-            with st.expander(f"{grade} **{row.get('name', 'Unknown')}** — Score: {score} | {row.get('headline', '')}"):
+            with st.expander(
+                f"{row.get('grade', '')} **{row.get('name', 'Unknown')}** — "
+                f"{score}/100 | {row.get('headline', '')} | _{row.get('source', '')}_"
+            ):
                 c1, c2 = st.columns([2, 1])
                 with c1:
-                    st.markdown(f"**LinkedIn:** [{row.get('linkedin_url', '')}]({row.get('linkedin_url', '')})")
-                    st.markdown("**Profile Highlights:**")
-                    st.caption(str(row.get("highlights", ""))[:600])
+                    li = row.get("linkedin_url", "")
+                    if li:
+                        st.markdown(f"**LinkedIn:** [{li}]({li})")
+                    em = row.get("email", "")
+                    if em:
+                        st.markdown(f"**Email:** {em}")
+                    ph = row.get("phone", "")
+                    if ph:
+                        st.markdown(f"**Phone:** {ph}")
+                    st.markdown(
+                        f"**Company:** {row.get('company_name', '—')}  "
+                        f"| **Location:** {row.get('location', '—')}"
+                    )
+                    st.markdown("**Profile text:**")
+                    st.caption(str(row.get("profile_text", ""))[:800])
                 with c2:
-                    st.markdown("**Score Breakdown:**")
+                    st.markdown("**Score breakdown:**")
                     mh_detail = row.get("must_have_detail", {})
                     if isinstance(mh_detail, dict):
                         for skill, hit in mh_detail.items():
@@ -720,43 +1004,34 @@ with tab_results:
                     st.metric("Must-Have", f"{row.get('must_have', 0)}/35")
                     st.metric("Seniority", f"{row.get('seniority', 0)}/15")
                     st.metric("Industry", f"{row.get('industry', 0)}/10")
-                    st.metric("Company Signal", f"{row.get('company', 0)}/10")
+                    st.metric("Company Signal", f"{row.get('company_signal', 0)}/10")
 
         st.divider()
-
-        # Export
         st.markdown("#### 📥 Export")
         col_a, col_b = st.columns(2)
         with col_a:
             excel_bytes = build_excel_bytes(
-                filtered_df,
-                st.session_state.jd_text,
-                st.session_state.boolean_str,
+                filtered_df, st.session_state.jd_text, st.session_state.boolean_str
             )
-            filename = f"candidates_{date.today()}.xlsx"
             st.download_button(
-                "⬇️ Download Excel",
-                data=excel_bytes,
-                file_name=filename,
+                "⬇️ Download Excel", data=excel_bytes,
+                file_name=f"candidates_{date.today()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary",
+                use_container_width=True, type="primary",
             )
         with col_b:
-            csv = filtered_df[available].to_csv(index=False)
             st.download_button(
                 "⬇️ Download CSV",
-                data=csv,
+                data=filtered_df[available].to_csv(index=False),
                 file_name=f"candidates_{date.today()}.csv",
-                mime="text/csv",
-                use_container_width=True,
+                mime="text/csv", use_container_width=True,
             )
 
 # ── TAB 3: Search String ──────────────────────────────────────────────────────
 
 with tab_string:
     st.markdown("### Boolean / X-Ray Search String")
-    st.caption("Edit this directly and re-run, or copy it into Google to do a manual LinkedIn X-Ray search.")
+    st.caption("Used by Google CSE for LinkedIn X-Ray. Copy into Google for a manual search.")
 
     boolean_str = st.text_area(
         "Search String (editable)",
@@ -767,28 +1042,23 @@ with tab_string:
     if boolean_str != st.session_state.boolean_str:
         st.session_state.boolean_str = boolean_str
 
-    st.markdown("#### Last Exa API Query")
+    st.markdown("#### Last structured query (Exa / Apollo / PDL)")
     st.code(st.session_state.search_query or "(not yet run)", language="text")
 
     st.divider()
-    st.markdown("#### Manual Google X-Ray")
-    st.caption("Paste the Boolean string above into Google to search LinkedIn directly.")
     if st.session_state.boolean_str:
-        import urllib.parse
         encoded = urllib.parse.quote(st.session_state.boolean_str)
-        google_url = f"https://www.google.com/search?q={encoded}"
-        st.markdown(f"[🔗 Open in Google]({google_url})")
+        st.markdown(f"[🔗 Open X-Ray search in Google](https://www.google.com/search?q={encoded})")
 
     st.divider()
     st.markdown("#### Refinement Suggestions")
     st.markdown("""
-| Intent | What to type in 'Refine search' |
+| Intent | What to type in "Refine search" |
 |---|---|
 | MBB alumni only | `focus on MBB background only` |
 | Remove automotive | `remove automotive, focus on energy` |
 | German native speakers | `German native speakers only` |
 | More senior | `only Principal or Director level` |
-| Specific city | `Munich only` or `Berlin and Hamburg` |
-| Tier-1 consulting firms | `Big4 or top-tier consulting firms` |
-| Use deep search | `use deep search for more results` |
+| Big4 consulting | `Big4 or top-tier consulting firms` |
+| Specific city | `Munich only` |
     """)
