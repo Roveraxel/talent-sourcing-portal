@@ -63,10 +63,16 @@ check_password()
 # ── Get API key ───────────────────────────────────────────────────────────────
 
 def get_exa_key():
+    """Load Exa API key from secrets and sanitize to plain ASCII string.
+    Streamlit secrets can introduce Unicode quote characters or BOM markers
+    that break HTTP header encoding — strip and re-encode defensively.
+    """
     try:
-        return st.secrets["EXA_API_KEY"]
+        raw = st.secrets["EXA_API_KEY"]
     except Exception:
-        return st.session_state.get("exa_key_input", "")
+        return ""
+    # Coerce to plain str, strip whitespace and any invisible Unicode artifacts
+    return str(raw).strip().encode("ascii", errors="ignore").decode("ascii")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -372,15 +378,13 @@ if "jd_text" not in st.session_state:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
+exa_key = get_exa_key()
+
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
 
-    exa_key = get_exa_key()
     if not exa_key:
-        exa_key = st.text_input("Exa API Key", type="password", key="exa_key_input",
-                                 help="Get yours at dashboard.exa.ai")
-        if exa_key:
-            st.session_state["exa_key_input"] = exa_key
+        st.error("⚠️ EXA_API_KEY not found in secrets. Ask your admin to configure it.")
 
     num_results = st.slider("Results per search", 5, 50, 20)
 
@@ -437,7 +441,7 @@ with tab_search:
         if not jd_text.strip():
             st.error("Please paste a Job Description first.")
         elif not exa_key:
-            st.error("Please enter your Exa API key in the sidebar.")
+            st.error("Exa API key not configured. Ask your admin to add EXA_API_KEY to Streamlit secrets.")
         else:
             st.session_state.jd_text = jd_text
 
