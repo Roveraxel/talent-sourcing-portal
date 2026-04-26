@@ -257,14 +257,16 @@ def build_boolean_string(jd_text: str, refinement: str = "") -> str:
 
 
 def search_exa(query: str, api_key: str, num_results: int = 20) -> list:
-    """Call Exa people search API."""
+    """Call Exa people search API, restricted to LinkedIn profiles."""
     resp = requests.post(
         "https://api.exa.ai/search",
         headers={"x-api-key": api_key, "Content-Type": "application/json"},
         json={
-            "query": f"category:people {query}",
+            "query": query,
+            "category": "people",
             "type": "auto",
             "num_results": num_results,
+            "includeDomains": ["linkedin.com"],
             "contents": {"highlights": {"max_characters": 3000}},
         },
         timeout=30,
@@ -530,7 +532,7 @@ with tab_results:
         grade_filter = st.multiselect(
             "Filter by grade",
             ["🟢 Strong Match", "🟡 Potential", "🔴 Weak Match"],
-            default=["🟢 Strong Match", "🟡 Potential"],
+            default=["🟢 Strong Match", "🟡 Potential", "🔴 Weak Match"],
         )
         filtered_df = df[df["grade"].isin(grade_filter)] if grade_filter else df
 
