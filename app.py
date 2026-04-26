@@ -76,46 +76,124 @@ def get_exa_key():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Keywords include German equivalents — LinkedIn profiles in Germany are often
+# written in German, so English-only matching scores everyone at zero.
 MUST_HAVE_KEYWORDS = {
-    "strategic consulting": ["strategy consultant", "management consultant", "consulting", "strategic consulting", "advanta", "mckinsey", "bcg", "bain", "deloitte", "roland berger", "oliver wyman", "accenture", "kpmg", "pwc", "strategy&", "monitor"],
-    "project/workstream management": ["project manager", "workstream", "project management", "program manager", "pmo", "led team", "managed team"],
-    "client stakeholder management": ["client", "stakeholder", "senior management", "board", "c-suite", "presentation", "client engagement"],
-    "structured problem-solving": ["structured", "problem solving", "analysis", "analytical", "hypothesis", "framework", "structured analysis"],
-    "German language": ["deutsch", "german", "deutschkenntnisse", "muttersprache"],
-    "English language": ["english", "englisch", "bilingual", "fluent english"],
+    "strategic consulting": [
+        # English
+        "strategy consultant", "management consultant", "consulting", "strategic consulting",
+        "strategy&", "monitor deloitte", "mckinsey", "bcg", "bain", "roland berger",
+        "oliver wyman", "accenture", "kpmg", "pwc", "deloitte", "advanta", "kearney",
+        # German
+        "unternehmensberater", "unternehmensberatung", "strategieberater", "strategieberatung",
+        "managementberater", "managementberatung", "berater", "beratung", "consultant",
+        "strategie", "unternehmensstrategien", "strategische beratung",
+    ],
+    "project/workstream management": [
+        # English
+        "project manager", "workstream", "project management", "program manager", "pmo",
+        "led team", "managed team", "project lead", "engagement manager",
+        # German
+        "projektmanagement", "projektleiter", "projektleitung", "projektverantwortung",
+        "workstreams", "teilprojekt", "arbeitspakete", "programmmanagement",
+    ],
+    "client stakeholder management": [
+        # English
+        "client", "stakeholder", "senior management", "c-suite", "client engagement",
+        "client-facing", "executive", "board",
+        # German
+        "kunden", "auftraggeber", "stakeholder", "geschäftsführung", "vorstand",
+        "kundenprojekt", "kundenbeziehung", "ansprechpartner", "präsentation",
+    ],
+    "structured problem-solving": [
+        # English
+        "structured", "problem solving", "analysis", "analytical", "framework",
+        "hypothesis", "issue tree", "structured analysis", "recommendations",
+        # German
+        "analyse", "konzept", "strukturiert", "problemlösung", "analytisch",
+        "handlungsempfehlungen", "lösungsansatz", "konzeption",
+    ],
+    "German language": [
+        "deutsch", "german", "deutschkenntnisse", "muttersprache", "auf deutsch",
+        "deutschsprachig", "germany", "münchen", "berlin", "frankfurt", "hamburg",
+        "düsseldorf", "köln", "stuttgart", "de -",
+    ],
+    "English language": [
+        "english", "englisch", "bilingual", "fluent english", "englischkenntnisse",
+        "englischsprachig", "business english",
+    ],
 }
 
 NICE_TO_HAVE_KEYWORDS = {
-    "mentoring/junior development": ["mentor", "coached", "junior", "team lead", "leadership", "guided", "feedback"],
-    "entrepreneurial mindset": ["entrepreneurial", "startup", "founder", "innovation", "entrepreneur"],
-    "zero-defect delivery": ["zero defect", "quality", "attention to detail", "high standards", "excellence"],
-    "empathetic leadership": ["empathetic", "empathy", "collaboration", "inclusive", "human-centered"],
+    "mentoring/junior development": [
+        "mentor", "coached", "junior", "team lead", "leadership", "guided", "feedback",
+        "nachwuchs", "förderung", "junior berater", "teamführung", "mitarbeiterentwicklung",
+    ],
+    "entrepreneurial mindset": [
+        "entrepreneurial", "startup", "founder", "innovation", "entrepreneur",
+        "unternehmerisch", "gründer", "innovativ", "eigeninitiative",
+    ],
+    "zero-defect delivery": [
+        "quality", "attention to detail", "high standards", "excellence", "zero defect",
+        "qualität", "sorgfalt", "genauigkeit", "null-fehler",
+    ],
+    "empathetic leadership": [
+        "empathetic", "empathy", "collaboration", "inclusive", "human-centered",
+        "empathie", "zusammenarbeit", "kollegial", "wertschätzend",
+    ],
 }
 
-COMPANY_TIER1 = ["mckinsey", "bcg", "bain", "roland berger", "oliver wyman", "strategy&", "monitor deloitte", "kearney", "arthur d little", "accenture strategy", "advanta consulting", "siemens advanta"]
-COMPANY_TIER2 = ["accenture", "deloitte", "pwc", "kpmg", "ey", "capgemini", "porsche consulting", "continental", "bosch", "siemens"]
+COMPANY_TIER1 = [
+    "mckinsey", "bcg", "bain", "roland berger", "oliver wyman", "strategy&",
+    "monitor deloitte", "kearney", "arthur d little", "accenture strategy",
+    "advanta consulting", "siemens advanta", "boston consulting",
+]
+COMPANY_TIER2 = [
+    "accenture", "deloitte", "pwc", "kpmg", "ey", "capgemini", "porsche consulting",
+    "continental", "bosch", "siemens", "mercedes", "volkswagen", "bmw", "zf",
+    "trumpf", "thyssenkrupp", "basf", "bayer", "allianz",
+]
 
 SENIORITY_WORDS = {
     "manager": 3, "director": 4, "vp": 5, "vice president": 5,
-    "senior": 2, "staff": 3, "principal": 4, "lead": 3,
+    "senior": 2, "staff": 3, "principal": 4, "lead": 3, "leiter": 3,
     "partner": 5, "associate": 1, "analyst": 0, "junior": 0, "intern": 0,
+    # German
+    "senior consultant": 2, "projektleiter": 3, "teamleiter": 3,
+    "geschäftsführer": 4, "direktor": 4,
 }
 
-INDUSTRIAL_WORDS = ["industrial", "manufacturing", "automotive", "energy", "siemens", "machinery", "engineering", "aerospace", "defense", "logistics", "utilities", "technology", "digital transformation"]
+INDUSTRIAL_WORDS = [
+    "industrial", "manufacturing", "automotive", "energy", "siemens", "machinery",
+    "engineering", "aerospace", "defense", "logistics", "utilities", "technology",
+    "digital transformation", "industrie", "fertigung", "maschinenbau", "energie",
+    "technologie", "digitalisierung", "automatisierung",
+]
 
 
 def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
-    """Rule-based scoring against JD requirements."""
+    """Score a candidate against JD requirements.
+
+    Since Exa already filtered results to matching people, candidates start with
+    a relevance base of 20 pts. Additional dimensions score on top of that.
+    This avoids penalising good candidates purely because their profile highlights
+    are short or written in German with unfamiliar phrasing.
+    """
     text = (profile_text or "").lower()
     scores = {}
 
-    # 1. Must-have skills (35 pts)
+    # Base relevance: Exa returned this person for our specific query — they already match.
+    base = 20
+
+    # 1. Must-have skills (35 pts — but we start from a 20pt floor)
+    # Effective must-have contribution scaled to 35 pts max on top of base.
     must_haves = jd_reqs.get("must_have_skills", list(MUST_HAVE_KEYWORDS.keys()))
     mh_hits = {}
     for skill in must_haves:
         keywords = MUST_HAVE_KEYWORDS.get(skill, [skill.lower()])
         hit = any(kw in text for kw in keywords)
         mh_hits[skill] = hit
+    # Scale: full match = 35, zero match = 0. But base covers the floor.
     mh_score = round(35 * sum(mh_hits.values()) / max(len(mh_hits), 1))
     scores["must_have_detail"] = mh_hits
     scores["must_have"] = mh_score
@@ -192,7 +270,7 @@ def score_candidate(profile_text: str, jd_reqs: dict) -> dict:
     scores["quality_penalty"] = quality_penalty
     scores["data_quality"] = quality
 
-    total = (mh_score + seniority_score + exp_score + nth_score
+    total = (base + mh_score + seniority_score + exp_score + nth_score
              + industry_score + company_score + location_score - quality_penalty)
     scores["total"] = max(0, min(105, total))
 
@@ -532,7 +610,7 @@ with tab_results:
         grade_filter = st.multiselect(
             "Filter by grade",
             ["🟢 Strong Match", "🟡 Potential", "🔴 Weak Match"],
-            default=["🟢 Strong Match", "🟡 Potential", "🔴 Weak Match"],
+            default=["🟢 Strong Match"],
         )
         filtered_df = df[df["grade"].isin(grade_filter)] if grade_filter else df
 
