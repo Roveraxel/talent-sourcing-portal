@@ -310,7 +310,7 @@ def search_google_cse(query: str, api_key: str, cse_id: str, n: int) -> list:
     xray = f'site:linkedin.com/in/ {query}'
     resp = requests.get(
         "https://www.googleapis.com/customsearch/v1",
-        params={"key": api_key, "cx": cse_id, "q": xray, "num": min(n, 10)},
+        params={"key": api_key, "cx": cse_id, "q": xray, "num": int(min(n, 10))},
         timeout=30,
     )
     resp.raise_for_status()
